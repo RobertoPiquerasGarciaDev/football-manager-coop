@@ -75,6 +75,24 @@ type TurnStatus = {
 type UserRow = {
   id: string
   club_id: string | null
+  display_name?: string
+}
+
+type TransferWindowRow = {
+  league_id: string
+  phase: string
+  summer_ready: string[]
+  winter_ready: string[]
+  budget: number
+}
+
+type NotificationRow = {
+  id: string
+  user_id: string
+  type: string
+  payload: Record<string, unknown>
+  read: boolean
+  created_at: Date
 }
 
 type ClubInput = {
@@ -114,6 +132,8 @@ const clubProfiles: Record<string, { name: string; shortName: string }> = {
   rovers: { name: "Pacific Rovers", shortName: "PFR" },
 }
 
+const clubKeys = Object.keys(clubProfiles)
+
 function jsonb(value: unknown): string {
   return JSON.stringify(value)
 }
@@ -122,9 +142,9 @@ function generateInviteCode(): string {
   return Math.random().toString(36).slice(2, 8).toUpperCase()
 }
 
-async function getUserClubProfile(userId: string) {
+async function getUserClubProfile(userId: string, requestedClubId?: string) {
   const result = await pool.query<UserRow>("SELECT id, club_id FROM users WHERE id = $1", [userId])
-  const key = result.rows[0]?.club_id ?? "metropolis"
+  const key = requestedClubId ?? result.rows[0]?.club_id ?? "metropolis"
   return clubProfiles[key] ?? clubProfiles.metropolis
 }
 
@@ -191,6 +211,28 @@ function mapTurn(row: TurnRow) {
   }
 }
 
+function mapTransferWindow(row?: TransferWindowRow | null) {
+  return row
+    ? {
+        phase: row.phase,
+        summerReady: row.summer_ready,
+        winterReady: row.winter_ready,
+        budget: row.budget,
+      }
+    : null
+}
+
+function mapNotification(row: NotificationRow) {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    type: row.type,
+    payload: row.payload,
+    read: row.read,
+    createdAt: row.created_at,
+  }
+}
+
 async function getLeagueById(id: string) {
   const result = await pool.query<LeagueRow>("SELECT * FROM leagues WHERE id = $1", [id])
   return result.rows[0] ?? null
@@ -201,13 +243,19 @@ async function createManagedClub(
   leagueId: string,
   userId: string,
   fallbackName = "Manager FC",
+  requestedClubId?: string,
 ) {
-  const profile = await getUserClubProfile(userId)
+  const profile = await getUserClubProfile(userId, requestedClubId)
   const existing = await client.query<ClubRow>("SELECT * FROM clubs WHERE league_id = $1 AND manager_user_id = $2", [
     leagueId,
     userId,
   ])
   if (existing.rows[0]) return existing.rows[0]
+
+  const taken = await client.query<ClubRow>("SELECT * FROM clubs WHERE league_id = $1 AND name = $2", [leagueId, profile.name])
+  if (taken.rows[0]) {
+    throw new Error("Selected club is already taken in this league")
+  }
 
   const result = await client.query<ClubRow>(
     `INSERT INTO clubs (league_id, manager_user_id, name, short_name, squad, tactics, finances)
@@ -224,6 +272,33 @@ async function createManagedClub(
     ],
   )
   return result.rows[0]
+}
+
+async function ensureTransferWindow(client: { query: typeof pool.query }, leagueId: string, budget = 25_000_000) {
+  const result = await client.query<TransferWindowRow>(
+    `INSERT INTO league_transfer_windows (league_id, phase, budget)
+     VALUES ($1, 'lobby', $2)
+     ON CONFLICT (league_id) DO UPDATE SET league_id = EXCLUDED.league_id
+     RETURNING *`,
+    [leagueId, budget],
+  )
+  return result.rows[0]
+}
+
+async function notifyLeagueMembers(
+  client: { query: typeof pool.query },
+  leagueId: string,
+  type: string,
+  payload: Record<string, unknown>,
+) {
+  const members = await client.query<{ user_id: string }>("SELECT user_id FROM league_members WHERE league_id = $1", [leagueId])
+  for (const member of members.rows) {
+    await client.query(
+      `INSERT INTO notifications (user_id, type, payload)
+       VALUES ($1, $2, $3)`,
+      [member.user_id, type, jsonb({ leagueId, ...payload })],
+    )
+  }
 }
 
 async function getTurnStatus(leagueId: string, matchday: number): Promise<TurnStatus> {
@@ -315,6 +390,14 @@ async function advanceLeagueIfReady(league: LeagueRow, matchday: number) {
       finishedMatches.push(result.rows[0])
     }
 
+    const nextMatchday = matchday + 1
+    const nextStatus = nextMatchday === 19 ? "winter_market" : "active"
+    const nextPhase = nextMatchday === 19 ? "winter_market" : "season"
+    await client.query("UPDATE leagues SET status = $2 WHERE id = $1", [league.id, nextStatus])
+    await client.query("UPDATE league_transfer_windows SET phase = $2, updated_at = NOW() WHERE league_id = $1", [
+      league.id,
+      nextPhase,
+    ])
     await client.query(
       `INSERT INTO league_events (league_id, type, payload)
        VALUES ($1, 'matchday_advanced', $2)`,
@@ -322,14 +405,22 @@ async function advanceLeagueIfReady(league: LeagueRow, matchday: number) {
         league.id,
         jsonb({
           matchday,
-          nextMatchday: matchday + 1,
+          nextMatchday,
           turnStatus: status,
           matches: finishedMatches.map(mapMatch),
         }),
       ],
     )
+    if (nextMatchday === 19) {
+      await notifyLeagueMembers(client, league.id, "winter_market_opened", {
+        message: "Mercado de invierno abierto",
+        matchday: nextMatchday,
+      })
+    } else {
+      await notifyLeagueMembers(client, league.id, "matchday_advanced", { matchday, nextMatchday })
+    }
     await client.query("COMMIT")
-    console.log("[coop] matchday advanced", { leagueId: league.id, matchday, nextMatchday: matchday + 1 })
+    console.log("[coop] matchday advanced", { leagueId: league.id, matchday, nextMatchday })
     return { advanced: true, turnStatus: status }
   } catch (error) {
     await client.query("ROLLBACK")
@@ -414,8 +505,8 @@ leagueRouter.post("/leagues", async (req: AuthenticatedRequest, res: Response) =
     await client.query("BEGIN")
 
     const leagueResult = await client.query<LeagueRow>(
-      `INSERT INTO leagues (name, invite_code, commissioner_user_id, settings, current_matchday)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO leagues (name, invite_code, commissioner_user_id, settings, current_matchday, status)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING *`,
       [
         req.body?.name ?? "Cooperative League",
@@ -423,6 +514,7 @@ leagueRouter.post("/leagues", async (req: AuthenticatedRequest, res: Response) =
         userId,
         req.body?.settings ?? {},
         req.body?.currentMatchday ?? 1,
+        "lobby",
       ],
     )
     const league = leagueResult.rows[0]
@@ -432,11 +524,13 @@ leagueRouter.post("/leagues", async (req: AuthenticatedRequest, res: Response) =
        ON CONFLICT (league_id, user_id) DO NOTHING`,
       [league.id, userId, "commissioner"],
     )
+    const window = await ensureTransferWindow(client, league.id, Number(req.body?.budget ?? 25_000_000))
 
     const clubs = Array.isArray(req.body?.clubs) ? (req.body.clubs as ClubInput[]) : []
     const matches = Array.isArray(req.body?.matches) ? (req.body.matches as MatchInput[]) : []
     const insertedClubs: ClubRow[] = []
-    const userClubProfile = await getUserClubProfile(userId)
+    const selectedClubId = typeof req.body?.clubId === "string" ? req.body.clubId : undefined
+    const userClubProfile = await getUserClubProfile(userId, selectedClubId)
 
     const clubsToCreate: ClubInput[] =
       clubs.length > 0
@@ -498,8 +592,11 @@ leagueRouter.post("/leagues", async (req: AuthenticatedRequest, res: Response) =
       )
     }
 
+    await notifyLeagueMembers(client, league.id, "manager_joined", {
+      message: `${insertedClubs[0]?.name ?? "A manager"} created the league`,
+    })
     await client.query("COMMIT")
-    res.status(201).json({ ...mapLeague(league), clubs: insertedClubs.map(mapClub), matches })
+    res.status(201).json({ ...mapLeague(league), clubs: insertedClubs.map(mapClub), matches, transferWindow: mapTransferWindow(window) })
   } catch (error) {
     await client.query("ROLLBACK")
     res.status(500).json({ error: "Failed to create league" })
@@ -538,7 +635,13 @@ leagueRouter.post("/leagues/join", async (req: AuthenticatedRequest, res: Respon
   const client = await pool.connect()
   try {
     await client.query("BEGIN")
-    await createManagedClub(client, row.id, userId)
+    const selectedClubId = typeof req.body?.clubId === "string" ? req.body.clubId : undefined
+    const club = await createManagedClub(client, row.id, userId, "Manager FC", selectedClubId)
+    await ensureTransferWindow(client, row.id)
+    await notifyLeagueMembers(client, row.id, "manager_joined", {
+      message: `${club.name} joined ${row.name}`,
+      clubName: club.name,
+    })
     await client.query("COMMIT")
   } catch (error) {
     await client.query("ROLLBACK")
@@ -550,7 +653,135 @@ leagueRouter.post("/leagues/join", async (req: AuthenticatedRequest, res: Respon
   }
 
   const clubs = await pool.query<ClubRow>("SELECT * FROM clubs WHERE league_id = $1 ORDER BY created_at ASC", [row.id])
-  res.json({ ...mapLeague(row), clubs: clubs.rows.map(mapClub) })
+  const window = await pool.query<TransferWindowRow>("SELECT * FROM league_transfer_windows WHERE league_id = $1", [row.id])
+  res.json({ ...mapLeague(row), clubs: clubs.rows.map(mapClub), transferWindow: mapTransferWindow(window.rows[0]) })
+})
+
+leagueRouter.get("/leagues", async (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.user?.id
+  if (!userId) {
+    res.status(401).json({ error: "Authentication required" })
+    return
+  }
+
+  const result = await pool.query<LeagueRow>(
+    `SELECT l.*
+     FROM leagues l
+     INNER JOIN league_members lm ON lm.league_id = l.id
+     WHERE lm.user_id = $1
+     ORDER BY l.updated_at DESC`,
+    [userId],
+  )
+
+  const leagues = await Promise.all(
+    result.rows.map(async (league) => {
+      const [clubs, window, turnStatus] = await Promise.all([
+        pool.query<ClubRow>("SELECT * FROM clubs WHERE league_id = $1 ORDER BY created_at ASC", [league.id]),
+        pool.query<TransferWindowRow>("SELECT * FROM league_transfer_windows WHERE league_id = $1", [league.id]),
+        getTurnStatus(league.id, league.current_matchday),
+      ])
+
+      return {
+        ...mapLeague(league),
+        clubs: clubs.rows.map(mapClub),
+        transferWindow: mapTransferWindow(window.rows[0]),
+        turnStatus,
+      }
+    }),
+  )
+
+  res.json(leagues)
+})
+
+leagueRouter.get("/leagues/:id/clubs/availability", async (req: AuthenticatedRequest, res: Response) => {
+  const leagueId = routeParam(req.params.id)
+  const assigned = await pool.query<{ name: string; manager: string | null }>(
+    `SELECT c.name, u.display_name AS manager
+     FROM clubs c
+     LEFT JOIN users u ON u.id = c.manager_user_id
+     WHERE c.league_id = $1`,
+    [leagueId],
+  )
+  const assignedByName = new Map(assigned.rows.map((row) => [row.name, row.manager]))
+
+  res.json(
+    clubKeys.map((key) => ({
+      id: key,
+      ...clubProfiles[key],
+      taken: assignedByName.has(clubProfiles[key].name),
+      managerName: assignedByName.get(clubProfiles[key].name) ?? null,
+    })),
+  )
+})
+
+leagueRouter.post("/leagues/:id/ready", async (req: AuthenticatedRequest, res: Response) => {
+  const league = await getLeagueById(routeParam(req.params.id))
+  const userId = req.user?.id
+  if (!league || !userId) {
+    res.status(league ? 401 : 404).json({ error: league ? "Authentication required" : "League not found" })
+    return
+  }
+
+  const client = await pool.connect()
+  try {
+    await client.query("BEGIN")
+    const current = await client.query<TransferWindowRow>("SELECT * FROM league_transfer_windows WHERE league_id = $1", [
+      league.id,
+    ])
+    const window = current.rows[0] ?? (await ensureTransferWindow(client, league.id))
+    const readyColumn = window.phase === "winter_market" ? "winter_ready" : "summer_ready"
+    const updated = await client.query<TransferWindowRow>(
+      `UPDATE league_transfer_windows
+       SET ${readyColumn} = CASE WHEN $2 = ANY(${readyColumn}) THEN ${readyColumn} ELSE array_append(${readyColumn}, $2::uuid) END,
+           updated_at = NOW()
+       WHERE league_id = $1
+       RETURNING *`,
+      [league.id, userId],
+    )
+    const members = await client.query<{ count: string }>("SELECT COUNT(*) AS count FROM league_members WHERE league_id = $1", [
+      league.id,
+    ])
+    const total = Number(members.rows[0]?.count ?? 0)
+    const readyCount = (readyColumn === "winter_ready" ? updated.rows[0].winter_ready : updated.rows[0].summer_ready).length
+    let status = league.status
+    if (total > 0 && readyCount >= total) {
+      status = "active"
+      await client.query("UPDATE leagues SET status = 'active', updated_at = NOW() WHERE id = $1", [league.id])
+      await client.query("UPDATE league_transfer_windows SET phase = 'season', updated_at = NOW() WHERE league_id = $1", [
+        league.id,
+      ])
+      await notifyLeagueMembers(client, league.id, "market_closed", { message: "All managers are ready. Season started." })
+      await client.query(
+        `INSERT INTO league_events (league_id, type, payload)
+         VALUES ($1, 'market_closed', $2)`,
+        [league.id, jsonb({ readyCount, total })],
+      )
+    } else {
+      await notifyLeagueMembers(client, league.id, "manager_ready", { readyCount, total })
+    }
+    await client.query("COMMIT")
+    res.json({ ok: true, status, transferWindow: mapTransferWindow(updated.rows[0]), readyCount, total })
+  } catch (error) {
+    await client.query("ROLLBACK")
+    console.error("[coop] failed to mark ready", { leagueId: league.id, userId, error })
+    res.status(500).json({ error: "Failed to mark manager ready" })
+  } finally {
+    client.release()
+  }
+})
+
+leagueRouter.get("/notifications", async (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.user?.id
+  if (!userId) {
+    res.status(401).json({ error: "Authentication required" })
+    return
+  }
+
+  const result = await pool.query<NotificationRow>(
+    "SELECT * FROM notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50",
+    [userId],
+  )
+  res.json(result.rows.map(mapNotification))
 })
 
 leagueRouter.get("/leagues/:id", async (req: Request, res: Response) => {
@@ -560,12 +791,13 @@ leagueRouter.get("/leagues/:id", async (req: Request, res: Response) => {
     return
   }
 
-  const [clubs, matches, turns, standings, turnStatus] = await Promise.all([
+  const [clubs, matches, turns, standings, turnStatus, transferWindow] = await Promise.all([
     pool.query<ClubRow>("SELECT * FROM clubs WHERE league_id = $1 ORDER BY name ASC", [league.id]),
     pool.query<MatchRow>("SELECT * FROM matches WHERE league_id = $1 ORDER BY matchday ASC, scheduled_at ASC", [league.id]),
     pool.query<TurnRow>("SELECT * FROM turns WHERE league_id = $1 ORDER BY submitted_at DESC", [league.id]),
     getStandings(league.id),
     getTurnStatus(league.id, league.current_matchday),
+    pool.query<TransferWindowRow>("SELECT * FROM league_transfer_windows WHERE league_id = $1", [league.id]),
   ])
 
   res.json({
@@ -575,6 +807,7 @@ leagueRouter.get("/leagues/:id", async (req: Request, res: Response) => {
     turns: turns.rows.map(mapTurn),
     standings,
     turnStatus,
+    transferWindow: mapTransferWindow(transferWindow.rows[0]),
   })
 })
 

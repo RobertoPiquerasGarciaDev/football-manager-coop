@@ -4,12 +4,12 @@ import { Bell, ChevronDown } from "lucide-react"
 import { formatMoney } from "@/lib/format"
 import { useGame } from "@/lib/game-provider"
 
-export function TopBar() {
+export function TopBar({ notificationCount: remoteNotificationCount, onNotificationsClick }: { notificationCount?: number; onNotificationsClick?: () => void }) {
   const { getUserClub, getLeague, getSeason, getNotificationCount } = useGame()
   const club = getUserClub()
   const league = getLeague()
   const season = getSeason()
-  const notificationCount = getNotificationCount()
+  const notificationCount = remoteNotificationCount ?? getNotificationCount()
 
   return (
     <div className="sticky top-0 z-50 bg-card/80 backdrop-blur-xl border-b border-border/50">
@@ -49,7 +49,11 @@ export function TopBar() {
             </span>
           </div>
 
-          <button className="relative p-2 rounded-xl bg-secondary hover:bg-muted transition-colors active:scale-95" aria-label="Notifications">
+          <button
+            className="relative p-2 rounded-xl bg-secondary hover:bg-muted transition-colors active:scale-95"
+            aria-label="Notifications"
+            onClick={onNotificationsClick}
+          >
             <Bell className="w-[18px] h-[18px] text-muted-foreground" />
             <span className="absolute -top-0.5 -right-0.5 w-[18px] h-[18px] bg-[var(--alert-red)] rounded-full text-[9px] font-bold text-white flex items-center justify-center shadow-[0_0_8px_var(--alert-red-glow)]">
               {notificationCount}

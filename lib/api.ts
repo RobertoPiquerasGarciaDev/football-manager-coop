@@ -31,6 +31,7 @@ export type LeagueResponse = {
   turns?: unknown[]
   standings?: StandingRow[]
   turnStatus?: TurnStatus
+  transferWindow?: TransferWindow | null
 }
 
 export type ClubResponse = {
@@ -50,6 +51,30 @@ export type TurnStatus = {
   submitted: number
   total: number
   allSubmitted: boolean
+}
+
+export type TransferWindow = {
+  phase: "lobby" | "summer_market" | "season" | "winter_market" | string
+  summerReady: string[]
+  winterReady: string[]
+  budget: number
+}
+
+export type ClubAvailability = {
+  id: string
+  name: string
+  shortName: string
+  taken: boolean
+  managerName: string | null
+}
+
+export type NotificationItem = {
+  id: string
+  userId: string
+  type: string
+  payload: Record<string, unknown>
+  read: boolean
+  createdAt: string
 }
 
 export type StandingRow = {
@@ -113,12 +138,14 @@ export function login(email: string, password: string): Promise<AuthResponse> {
   })
 }
 
-export function createLeague(token: string, name = "Cooperative League"): Promise<LeagueResponse> {
+export function createLeague(token: string, name = "Cooperative League", clubId = "metropolis", budget = 25000000): Promise<LeagueResponse> {
   return apiFetch<LeagueResponse>("/leagues", {
     method: "POST",
     token,
     body: JSON.stringify({
       name,
+      clubId,
+      budget,
       settings: {
         turnWindowHours: 48,
         privacy: "private",
@@ -127,16 +154,34 @@ export function createLeague(token: string, name = "Cooperative League"): Promis
   })
 }
 
-export function joinLeague(token: string, inviteCode: string): Promise<LeagueResponse> {
+export function joinLeague(token: string, inviteCode: string, clubId = "metropolis"): Promise<LeagueResponse> {
   return apiFetch<LeagueResponse>("/leagues/join", {
     method: "POST",
     token,
-    body: JSON.stringify({ inviteCode }),
+    body: JSON.stringify({ inviteCode, clubId }),
   })
+}
+
+export function listLeagues(token: string): Promise<LeagueResponse[]> {
+  return apiFetch<LeagueResponse[]>("/leagues", { token })
 }
 
 export function fetchLeague(token: string, leagueId: string): Promise<LeagueResponse> {
   return apiFetch<LeagueResponse>(`/leagues/${leagueId}`, { token })
+}
+
+export function fetchClubAvailability(token: string, leagueId: string): Promise<ClubAvailability[]> {
+  return apiFetch<ClubAvailability[]>(`/leagues/${leagueId}/clubs/availability`, { token })
+}
+
+export function markLeagueReady(token: string, leagueId: string) {
+  return apiFetch<{ ok: boolean; status: string; transferWindow: TransferWindow | null; readyCount: number; total: number }>(
+    `/leagues/${leagueId}/ready`,
+    {
+      method: "POST",
+      token,
+    },
+  )
 }
 
 export function submitTurn(token: string, leagueId: string, payload: TurnPayload) {
@@ -149,4 +194,8 @@ export function submitTurn(token: string, leagueId: string, payload: TurnPayload
 
 export function getStandings(token: string, leagueId: string): Promise<StandingRow[]> {
   return apiFetch<StandingRow[]>(`/leagues/${leagueId}/standings`, { token })
+}
+
+export function getNotifications(token: string): Promise<NotificationItem[]> {
+  return apiFetch<NotificationItem[]>("/notifications", { token })
 }

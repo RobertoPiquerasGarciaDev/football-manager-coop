@@ -34,6 +34,17 @@ CREATE TABLE IF NOT EXISTS league_members (
   UNIQUE (league_id, user_id)
 );
 
+CREATE TABLE IF NOT EXISTS league_transfer_windows (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  league_id UUID NOT NULL REFERENCES leagues(id) ON DELETE CASCADE UNIQUE,
+  phase TEXT NOT NULL DEFAULT 'lobby',
+  summer_ready UUID[] NOT NULL DEFAULT '{}'::uuid[],
+  winter_ready UUID[] NOT NULL DEFAULT '{}'::uuid[],
+  budget INTEGER NOT NULL DEFAULT 25000000,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS clubs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   league_id UUID NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
@@ -97,6 +108,17 @@ CREATE TABLE IF NOT EXISTS league_events (
 
 CREATE INDEX IF NOT EXISTS league_events_league_created_idx ON league_events (league_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS notifications (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  type TEXT NOT NULL,
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  read BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS notifications_user_created_idx ON notifications (user_id, created_at DESC);
+
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime')
@@ -108,6 +130,20 @@ BEGIN
         AND tablename = 'turns'
     ) THEN
     ALTER PUBLICATION supabase_realtime ADD TABLE turns;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime')
+    AND NOT EXISTS (
+      SELECT 1
+      FROM pg_publication_tables
+      WHERE pubname = 'supabase_realtime'
+        AND schemaname = 'public'
+        AND tablename = 'notifications'
+    ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE notifications;
   END IF;
 END $$;
 
