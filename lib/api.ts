@@ -29,6 +29,7 @@ export type LeagueResponse = {
   clubs?: ClubResponse[]
   matches?: unknown[]
   turns?: unknown[]
+  tacticDrafts?: unknown[]
   standings?: StandingRow[]
   turnStatus?: TurnStatus
   transferWindow?: TransferWindow | null
@@ -202,6 +203,14 @@ export function markLeagueReady(token: string, leagueId: string) {
 
 export function submitTurn(token: string, leagueId: string, payload: TurnPayload) {
   return apiFetch<{ ok: boolean; turn: unknown; turnStatus: TurnStatus; advanced: boolean }>(`/leagues/${leagueId}/turn`, {
+    method: "POST",
+    token,
+    body: JSON.stringify(payload),
+  })
+}
+
+export function saveTactics(token: string, leagueId: string, payload: TurnPayload) {
+  return apiFetch<{ ok: boolean; draft: unknown; turnStatus: TurnStatus }>(`/leagues/${leagueId}/tactics`, {
     method: "POST",
     token,
     body: JSON.stringify(payload),

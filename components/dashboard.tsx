@@ -30,7 +30,7 @@ import { useAuth } from "@/hooks/use-auth"
 import { useLeagueSync } from "@/hooks/use-league-sync"
 import { useLeagueRealtime } from "@/hooks/use-league-realtime"
 import { useToast } from "@/hooks/use-toast"
-import { createLeague, createTransfer, fetchLeague, joinLeague, listLeagues, markLeagueReady, markNotificationRead, simulateMatchday, submitTurn, type LeagueResponse } from "@/lib/api"
+import { createLeague, createTransfer, fetchLeague, joinLeague, listLeagues, markLeagueReady, markNotificationRead, saveTactics, simulateMatchday, submitTurn, type LeagueResponse } from "@/lib/api"
 import { useGame } from "@/lib/game-provider"
 import { useNotifications } from "@/lib/notifications"
 import type { GameSave, Match, MatchEvent } from "@/lib/types"
@@ -105,7 +105,9 @@ export default function Dashboard() {
   const [selectedLeagueId, setSelectedLeagueId] = useState<string | null>(null)
   const [isLeagueActionPending, setIsLeagueActionPending] = useState(false)
   const [isTurnSubmitting, setIsTurnSubmitting] = useState(false)
+  const [isTacticSaving, setIsTacticSaving] = useState(false)
   const [isTurnConfirmOpen, setIsTurnConfirmOpen] = useState(false)
+  const [tacticSavedMessage, setTacticSavedMessage] = useState<string | null>(null)
   const [showOnboarding, setShowOnboarding] = useState(() =>
     typeof window === "undefined" ? false : window.localStorage.getItem("fm-coop-onboarded") !== "true",
   )
@@ -300,6 +302,29 @@ export default function Dashboard() {
       setLeagueSyncError(error instanceof Error ? error.message : "No se pudo enviar el turno")
     } finally {
       setIsTurnSubmitting(false)
+    }
+  }
+
+  async function handleSaveTactics() {
+    const clubId = remoteLeague?.clubs?.find((club) => club.managerUserId === user?.id)?.id
+    if (!token || !remoteLeague?.id || !clubId) return
+
+    setIsTacticSaving(true)
+    setLeagueSyncError(null)
+    try {
+      await saveTactics(token, remoteLeague.id, {
+        clubId,
+        matchday: remoteLeague.currentMatchday,
+        lineup: selectedLineup,
+        tactics: selectedTactics,
+      })
+      setTacticSavedMessage("Táctica guardada ✓")
+      await leagueSync.refresh()
+      toast({ title: "Táctica guardada", description: "Puedes seguir cambiándola hasta enviar el turno." })
+    } catch (error) {
+      setLeagueSyncError(error instanceof Error ? error.message : "No se pudo guardar la táctica")
+    } finally {
+      setIsTacticSaving(false)
     }
   }
 
@@ -581,14 +606,25 @@ export default function Dashboard() {
               </p>
             )}
             {remoteLeague.status === "active" && (
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setIsTurnConfirmOpen(true)}
-                disabled={hasSubmittedTurn || isTurnSubmitting || !remoteLeague.clubs?.some((club) => club.managerUserId === user?.id)}
-              >
-                {hasSubmittedTurn ? "✓ Turno enviado" : isTurnSubmitting ? "Confirmando..." : "Confirmar Alineación y Táctica"}
-              </Button>
+              <div className="flex flex-col gap-2">
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={handleSaveTactics}
+                  disabled={hasSubmittedTurn || isTacticSaving || !remoteLeague.clubs?.some((club) => club.managerUserId === user?.id)}
+                >
+                  {isTacticSaving ? "Guardando táctica..." : "Confirmar Táctica"}
+                </Button>
+                {tacticSavedMessage && <p className="text-[11px] font-bold text-[var(--success-green)]">{tacticSavedMessage}</p>}
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setIsTurnConfirmOpen(true)}
+                  disabled={hasSubmittedTurn || isTurnSubmitting || !remoteLeague.clubs?.some((club) => club.managerUserId === user?.id)}
+                >
+                  {hasSubmittedTurn ? "✓ Turno enviado" : isTurnSubmitting ? "Enviando turno..." : "Enviar Turno"}
+                </Button>
+              </div>
             )}
             {isMarketOpen && (
               <div className="rounded-2xl border border-[var(--amber)]/30 bg-[var(--amber)]/10 p-3">
@@ -742,9 +778,9 @@ export default function Dashboard() {
       <Dialog open={isTurnConfirmOpen} onOpenChange={setIsTurnConfirmOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Confirmar Alineación y Táctica</DialogTitle>
+            <DialogTitle>Enviar Turno</DialogTitle>
             <DialogDescription>
-              Revisa los 11 titulares y la formación antes de bloquear tu turno de la jornada {remoteLeague.currentMatchday}.
+              Acción irreversible: bloquea tu táctica para la jornada {remoteLeague.currentMatchday}. La simulación solo empieza cuando todos envían turno.
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-3">
@@ -768,7 +804,7 @@ export default function Dashboard() {
               </p>
             )}
             <Button type="button" onClick={handleSubmitTurn} disabled={isTurnSubmitting}>
-              {isTurnSubmitting ? "Confirmando..." : "Confirmar turno"}
+              {isTurnSubmitting ? "Enviando..." : "Enviar Turno definitivo"}
             </Button>
           </div>
         </DialogContent>

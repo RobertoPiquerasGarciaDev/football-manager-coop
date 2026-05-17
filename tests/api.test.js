@@ -114,15 +114,36 @@ describe("Pitch Perfect production API", () => {
     const full = await api(`/leagues/${leagueId}`, { token: userA.token })
     const clubA = full.clubs.find((club) => club.managerUserId === userA.user.id)
     const clubB = full.clubs.find((club) => club.managerUserId === userB.user.id)
-    await api(`/leagues/${leagueId}/turn`, {
+    const draft = await api(`/leagues/${leagueId}/tactics`, {
       method: "POST",
       token: userA.token,
       body: JSON.stringify({ clubId: clubA.id, matchday: full.currentMatchday, lineup: Array.from({ length: 11 }, (_, index) => `A${index}`), tactics: { formation: "4-3-3" } }),
     })
-    const turn = await api(`/leagues/${leagueId}/turn`, {
+    expect(draft.ok).toBe(true)
+    const afterDraft = await api(`/leagues/${leagueId}`, { token: userA.token })
+    expect(afterDraft.currentMatchday).toBe(full.currentMatchday)
+    expect(afterDraft.turnStatus.submitted).toBe(0)
+    await api(`/leagues/${leagueId}/turn`, {
+      method: "POST",
+      token: userA.token,
+      body: JSON.stringify({ clubId: clubA.id, matchday: full.currentMatchday }),
+    })
+    await expect(
+      api(`/leagues/${leagueId}/turn`, {
+        method: "POST",
+        token: userA.token,
+        body: JSON.stringify({ clubId: clubA.id, matchday: full.currentMatchday }),
+      }),
+    ).rejects.toThrow("409")
+    await api(`/leagues/${leagueId}/tactics`, {
       method: "POST",
       token: userB.token,
       body: JSON.stringify({ clubId: clubB.id, matchday: full.currentMatchday, lineup: Array.from({ length: 11 }, (_, index) => `B${index}`), tactics: { formation: "4-2-3-1" } }),
+    })
+    const turn = await api(`/leagues/${leagueId}/turn`, {
+      method: "POST",
+      token: userB.token,
+      body: JSON.stringify({ clubId: clubB.id, matchday: full.currentMatchday }),
     })
     expect(turn.advanced).toBe(true)
     const standings = await api(`/leagues/${leagueId}/standings`, { token: userA.token })

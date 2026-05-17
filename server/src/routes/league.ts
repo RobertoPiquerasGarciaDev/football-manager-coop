@@ -53,6 +53,17 @@ type TurnRow = {
   submitted_at: Date
 }
 
+type TacticDraftRow = {
+  id: string
+  league_id: string
+  club_id: string
+  user_id: string | null
+  matchday: number
+  lineup: unknown
+  tactics: unknown
+  updated_at: Date
+}
+
 type StandingRow = {
   clubId: string
   clubName: string
@@ -274,6 +285,19 @@ function mapTurn(row: TurnRow) {
     lineup: row.lineup,
     tactics: row.tactics,
     submittedAt: row.submitted_at,
+  }
+}
+
+function mapTacticDraft(row: TacticDraftRow) {
+  return {
+    id: row.id,
+    leagueId: row.league_id,
+    clubId: row.club_id,
+    userId: row.user_id,
+    matchday: row.matchday,
+    lineup: row.lineup,
+    tactics: row.tactics,
+    updatedAt: row.updated_at,
   }
 }
 
@@ -1160,13 +1184,17 @@ leagueRouter.get("/leagues/:id/matchday", async (req: AuthenticatedRequest, res:
     res.status(404).json({ error: "League not found" })
     return
   }
-  const [turnStatus, matches, turns] = await Promise.all([
+  const [turnStatus, matches, turns, tacticDrafts] = await Promise.all([
     getTurnStatus(league.id, league.current_matchday),
     pool.query<MatchRow>("SELECT * FROM matches WHERE league_id = $1 AND matchday = $2 ORDER BY created_at ASC", [
       league.id,
       league.current_matchday,
     ]),
     pool.query<TurnRow>("SELECT * FROM turns WHERE league_id = $1 AND matchday = $2 ORDER BY submitted_at DESC", [
+      league.id,
+      league.current_matchday,
+    ]),
+    pool.query<TacticDraftRow>("SELECT * FROM tactic_drafts WHERE league_id = $1 AND matchday = $2 ORDER BY updated_at DESC", [
       league.id,
       league.current_matchday,
     ]),
@@ -1178,6 +1206,7 @@ leagueRouter.get("/leagues/:id/matchday", async (req: AuthenticatedRequest, res:
     turnStatus,
     matches: matches.rows.map(mapMatch),
     turns: turns.rows.map(mapTurn),
+    tacticDrafts: tacticDrafts.rows.map(mapTacticDraft),
   })
 })
 
@@ -1435,6 +1464,71 @@ leagueRouter.post("/leagues/:id/simulate-matchday", async (req: AuthenticatedReq
   }
 })
 
+leagueRouter.post("/leagues/:id/tactics", async (req: AuthenticatedRequest, res: Response) => {
+  const league = await getLeagueById(routeParam(req.params.id))
+  if (!league) {
+    res.status(404).json({ error: "League not found" })
+    return
+  }
+  if (!req.user?.id) {
+    res.status(401).json({ error: "Authentication required" })
+    return
+  }
+  if (!req.body?.clubId) {
+    res.status(400).json({ error: "clubId is required" })
+    return
+  }
+
+  const matchday = req.body.matchday ?? league.current_matchday
+  const club = await pool.query<ClubRow>(
+    "SELECT * FROM clubs WHERE id = $1 AND league_id = $2 AND manager_user_id = $3",
+    [req.body.clubId, league.id, req.user.id],
+  )
+  if (!club.rows[0]) {
+    res.status(403).json({ error: "You can only save tactics for your assigned club" })
+    return
+  }
+  const submitted = await pool.query<TurnRow>(
+    "SELECT * FROM turns WHERE league_id = $1 AND club_id = $2 AND matchday = $3",
+    [league.id, req.body.clubId, matchday],
+  )
+  if (submitted.rows[0]) {
+    res.status(409).json({ error: "Turn already submitted for this matchday; tactics are locked" })
+    return
+  }
+
+  const client = await pool.connect()
+  try {
+    await client.query("BEGIN")
+    await client.query("UPDATE clubs SET tactics = $2, updated_at = NOW() WHERE id = $1", [
+      req.body.clubId,
+      jsonb(req.body.tactics),
+    ])
+    const result = await client.query<TacticDraftRow>(
+      `INSERT INTO tactic_drafts (league_id, club_id, user_id, matchday, lineup, tactics)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (league_id, club_id, matchday)
+       DO UPDATE SET user_id = EXCLUDED.user_id, lineup = EXCLUDED.lineup,
+         tactics = EXCLUDED.tactics, updated_at = NOW()
+       RETURNING *`,
+      [league.id, req.body.clubId, req.user.id, matchday, jsonb(req.body.lineup), jsonb(req.body.tactics)],
+    )
+    await client.query(
+      `INSERT INTO league_events (league_id, type, payload)
+       VALUES ($1, 'tactics_saved', $2)`,
+      [league.id, jsonb({ matchday, clubId: req.body.clubId, userId: req.user.id })],
+    )
+    await client.query("COMMIT")
+    res.json({ ok: true, draft: mapTacticDraft(result.rows[0]), turnStatus: await getTurnStatus(league.id, matchday) })
+  } catch (error) {
+    await client.query("ROLLBACK")
+    console.error("[coop] failed to save tactics", { leagueId: league.id, userId: req.user.id, error })
+    res.status(500).json({ error: "Failed to save tactics" })
+  } finally {
+    client.release()
+  }
+})
+
 leagueRouter.get("/leagues/:id", async (req: Request, res: Response) => {
   const league = await getLeagueById(routeParam(req.params.id))
   if (!league) {
@@ -1442,10 +1536,11 @@ leagueRouter.get("/leagues/:id", async (req: Request, res: Response) => {
     return
   }
 
-  const [clubs, matches, turns, standings, turnStatus, transferWindow] = await Promise.all([
+  const [clubs, matches, turns, tacticDrafts, standings, turnStatus, transferWindow] = await Promise.all([
     pool.query<ClubRow>("SELECT * FROM clubs WHERE league_id = $1 ORDER BY name ASC", [league.id]),
     pool.query<MatchRow>("SELECT * FROM matches WHERE league_id = $1 ORDER BY matchday ASC, scheduled_at ASC", [league.id]),
     pool.query<TurnRow>("SELECT * FROM turns WHERE league_id = $1 ORDER BY submitted_at DESC", [league.id]),
+    pool.query<TacticDraftRow>("SELECT * FROM tactic_drafts WHERE league_id = $1 ORDER BY updated_at DESC", [league.id]),
     getStandings(league.id),
     getTurnStatus(league.id, league.current_matchday),
     pool.query<TransferWindowRow>("SELECT * FROM league_transfer_windows WHERE league_id = $1", [league.id]),
@@ -1456,6 +1551,7 @@ leagueRouter.get("/leagues/:id", async (req: Request, res: Response) => {
     clubs: clubs.rows.map(mapClub),
     matches: matches.rows.map(mapMatch),
     turns: turns.rows.map(mapTurn),
+    tacticDrafts: tacticDrafts.rows.map(mapTacticDraft),
     standings,
     turnStatus,
     transferWindow: mapTransferWindow(transferWindow.rows[0]),
@@ -1474,8 +1570,8 @@ leagueRouter.post("/leagues/:id/turn", async (req: AuthenticatedRequest, res: Re
     return
   }
 
-  if (!req.body?.clubId || !req.body?.lineup || !req.body?.tactics) {
-    res.status(400).json({ error: "clubId, lineup and tactics are required" })
+  if (!req.body?.clubId) {
+    res.status(400).json({ error: "clubId is required" })
     return
   }
 
@@ -1495,14 +1591,31 @@ leagueRouter.post("/leagues/:id/turn", async (req: AuthenticatedRequest, res: Re
       return
     }
 
+    const existingTurn = await pool.query<TurnRow>(
+      "SELECT * FROM turns WHERE league_id = $1 AND club_id = $2 AND matchday = $3",
+      [league.id, req.body.clubId, matchday],
+    )
+    if (existingTurn.rows[0]) {
+      res.status(409).json({ error: "Turn already submitted for this matchday" })
+      return
+    }
+    const draft = await pool.query<TacticDraftRow>(
+      "SELECT * FROM tactic_drafts WHERE league_id = $1 AND club_id = $2 AND matchday = $3",
+      [league.id, req.body.clubId, matchday],
+    )
+    const lineup = req.body.lineup ?? draft.rows[0]?.lineup
+    const tactics = req.body.tactics ?? draft.rows[0]?.tactics
+    if (!lineup || !tactics) {
+      res.status(400).json({ error: "Save tactics before submitting turn" })
+      return
+    }
+
     console.log("[coop] submitting turn", { leagueId: league.id, matchday, userId: req.user.id, clubId: req.body.clubId })
     const turnResult = await pool.query<TurnRow>(
       `INSERT INTO turns (league_id, club_id, user_id, matchday, lineup, tactics)
        VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (league_id, club_id, matchday)
-       DO UPDATE SET user_id = EXCLUDED.user_id, lineup = EXCLUDED.lineup, tactics = EXCLUDED.tactics, submitted_at = NOW()
        RETURNING *`,
-      [league.id, req.body.clubId, req.user.id, matchday, jsonb(req.body.lineup), jsonb(req.body.tactics)],
+      [league.id, req.body.clubId, req.user.id, matchday, jsonb(lineup), jsonb(tactics)],
     )
     const { advanced, turnStatus } = await advanceLeagueIfReady(league, matchday)
     console.log("[coop] turn submitted", { leagueId: league.id, matchday, advanced, turnStatus })

@@ -174,6 +174,18 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS tactic_drafts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  league_id UUID NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
+  club_id UUID NOT NULL REFERENCES clubs(id) ON DELETE CASCADE,
+  user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+  matchday INTEGER NOT NULL,
+  lineup JSONB NOT NULL DEFAULT '[]'::jsonb,
+  tactics JSONB NOT NULL DEFAULT '{}'::jsonb,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (league_id, club_id, matchday)
+);
+
 CREATE TABLE IF NOT EXISTS turns (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   league_id UUID NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
@@ -227,6 +239,7 @@ CREATE INDEX IF NOT EXISTS transfer_offers_league_created_idx ON transfer_offers
 CREATE INDEX IF NOT EXISTS club_finances_league_idx ON club_finances (league_id);
 CREATE INDEX IF NOT EXISTS financial_events_club_created_idx ON financial_events (club_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS chat_messages_league_created_idx ON chat_messages (league_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS tactic_drafts_league_matchday_idx ON tactic_drafts (league_id, matchday);
 CREATE INDEX IF NOT EXISTS league_members_club_id_idx ON league_members (club_id);
 CREATE INDEX IF NOT EXISTS notifications_league_id_idx ON notifications (league_id);
 
@@ -249,7 +262,7 @@ DECLARE
   table_name TEXT;
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
-    FOREACH table_name IN ARRAY ARRAY['leagues', 'clubs', 'matches', 'standings', 'transfers', 'transfer_offers', 'club_finances', 'financial_events', 'chat_messages', 'league_transfer_windows', 'transfer_window'] LOOP
+    FOREACH table_name IN ARRAY ARRAY['leagues', 'clubs', 'matches', 'standings', 'transfers', 'transfer_offers', 'club_finances', 'financial_events', 'chat_messages', 'tactic_drafts', 'league_transfer_windows', 'transfer_window'] LOOP
       IF NOT EXISTS (
         SELECT 1
         FROM pg_publication_tables

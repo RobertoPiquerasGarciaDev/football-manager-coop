@@ -46,6 +46,7 @@ export function useLeagueSync({ token, leagueId, onMessage }: UseLeagueSyncOptio
       .on("postgres_changes", { event: "*", schema: "public", table: "leagues", filter: `id=eq.${leagueId}` }, refreshFromRealtime)
       .on("postgres_changes", { event: "*", schema: "public", table: "clubs", filter: `league_id=eq.${leagueId}` }, refreshFromRealtime)
       .on("postgres_changes", { event: "*", schema: "public", table: "turns", filter: `league_id=eq.${leagueId}` }, refreshFromRealtime)
+      .on("postgres_changes", { event: "*", schema: "public", table: "tactic_drafts", filter: `league_id=eq.${leagueId}` }, refreshFromRealtime)
       .on("postgres_changes", { event: "*", schema: "public", table: "matches", filter: `league_id=eq.${leagueId}` }, refreshFromRealtime)
       .on("postgres_changes", { event: "*", schema: "public", table: "standings", filter: `league_id=eq.${leagueId}` }, refreshFromRealtime)
       .on("postgres_changes", { event: "*", schema: "public", table: "transfers", filter: `league_id=eq.${leagueId}` }, refreshFromRealtime)

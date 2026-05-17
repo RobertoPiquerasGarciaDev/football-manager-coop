@@ -24,6 +24,11 @@ export function useLeagueRealtime({ leagueId, onTurnChange }: UseLeagueRealtimeO
       )
       .on(
         "postgres_changes",
+        { event: "*", schema: "public", table: "tactic_drafts", filter: `league_id=eq.${leagueId}` },
+        onTurnChange,
+      )
+      .on(
+        "postgres_changes",
         { event: "*", schema: "public", table: "league_events", filter: `league_id=eq.${leagueId}` },
         onTurnChange,
       )
