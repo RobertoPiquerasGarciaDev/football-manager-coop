@@ -79,6 +79,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS turns_league_user_matchday_idx
   ON turns (league_id, user_id, matchday)
   WHERE user_id IS NOT NULL;
 
+CREATE INDEX IF NOT EXISTS leagues_invite_code_idx ON leagues (invite_code);
+CREATE INDEX IF NOT EXISTS league_members_user_id_idx ON league_members (user_id);
+CREATE INDEX IF NOT EXISTS clubs_league_manager_idx ON clubs (league_id, manager_user_id);
+CREATE INDEX IF NOT EXISTS matches_league_matchday_idx ON matches (league_id, matchday, status);
+CREATE INDEX IF NOT EXISTS turns_league_matchday_idx ON turns (league_id, matchday);
+
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime')

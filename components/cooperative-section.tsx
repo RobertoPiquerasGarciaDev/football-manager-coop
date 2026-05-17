@@ -14,6 +14,14 @@ export function CooperativeSection() {
   const pendingTurns = save.turnSubmissions.filter((turn) => !turn.submittedAt).length
   const readyTurns = save.turnSubmissions.filter((turn) => turn.submittedAt).length
   const leagueMessages = save.messages.filter((item) => item.channel === "league_general").slice(-8).reverse()
+  const activity = save.transfers
+    .slice(-6)
+    .reverse()
+    .map((transfer) => {
+      const player = save.players.find((item) => item.id === transfer.playerId)
+      const club = save.clubs.find((item) => item.id === transfer.toClubId || item.id === transfer.initiatedByClubId)
+      return `${club?.name ?? "A club"} ${transfer.status === "accepted" ? "signed" : transfer.status === "countered" ? "countered for" : transfer.status === "rejected" ? "rejected" : "bid for"} ${player?.displayName ?? "a player"} for €${Math.round(transfer.terms.fee / 1_000_000)}M`
+    })
 
   function handleMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -35,6 +43,17 @@ export function CooperativeSection() {
           <Metric label="Managers" value={league.humanManagerIds.length} />
           <Metric label="Ready" value={readyTurns} />
           <Metric label="Pending" value={pendingTurns} />
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-border/50 bg-card p-4">
+        <h3 className="mb-3 text-xs font-bold uppercase tracking-wider text-muted-foreground">Realtime Activity Feed</h3>
+        <div className="flex flex-col gap-2">
+          {activity.map((item, index) => (
+            <div key={`${item}-${index}`} className="animate-slide-in-soft rounded-xl bg-secondary/50 p-2 text-sm text-muted-foreground" style={{ animationDelay: `${index * 70}ms` }}>
+              {item}
+            </div>
+          ))}
         </div>
       </div>
 

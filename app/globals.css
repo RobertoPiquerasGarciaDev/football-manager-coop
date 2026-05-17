@@ -142,3 +142,67 @@
   background-size: 200% auto;
   animation: shimmer 3s linear infinite;
 }
+
+@keyframes float-ball {
+  0%, 100% { transform: translate3d(0, 0, 0) rotate(0deg); opacity: 0.25; }
+  50% { transform: translate3d(14px, -24px, 0) rotate(180deg); opacity: 0.75; }
+}
+
+@keyframes card-enter {
+  from { opacity: 0; transform: translateY(18px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes confetti-pop {
+  0% { opacity: 1; transform: translateY(0) rotate(0deg) scale(1); }
+  100% { opacity: 0; transform: translateY(-80px) rotate(220deg) scale(0.4); }
+}
+
+@keyframes flip-score {
+  0% { transform: rotateX(0deg); }
+  50% { transform: rotateX(90deg); }
+  100% { transform: rotateX(0deg); }
+}
+
+@keyframes slide-in-soft {
+  from { opacity: 0; transform: translateX(18px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes progress-fill {
+  from { width: 0%; }
+  to { width: var(--progress-width, 100%); }
+}
+
+.animate-float-ball { animation: float-ball 5s ease-in-out infinite; }
+.animate-card-enter { animation: card-enter 420ms ease-out both; }
+.animate-confetti-pop { animation: confetti-pop 900ms ease-out forwards; }
+.animate-flip-score { animation: flip-score 650ms ease-in-out; transform-style: preserve-3d; }
+.animate-slide-in-soft { animation: slide-in-soft 360ms ease-out both; }
+.animate-progress-fill { animation: progress-fill 900ms ease-out both; }
+
+.card-3d {
+  transform-style: preserve-3d;
+  transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
+}
+.card-3d:hover {
+  transform: perspective(800px) rotateX(3deg) rotateY(-5deg) translateY(-2px);
+  box-shadow: 0 16px 40px var(--amber-glow);
+}
+
+.light {
+  --background: oklch(0.96 0.01 85);
+  --foreground: oklch(0.17 0.015 265);
+  --card: oklch(0.99 0.006 85);
+  --card-foreground: oklch(0.17 0.015 265);
+  --secondary: oklch(0.91 0.015 85);
+  --secondary-foreground: oklch(0.22 0.015 265);
+  --muted: oklch(0.88 0.012 85);
+  --muted-foreground: oklch(0.42 0.012 265);
+  --border: oklch(0.82 0.012 85);
+  --input: oklch(0.9 0.012 85);
+}
+
+html, body {
+  transition: background-color 240ms ease, color 240ms ease;
+}

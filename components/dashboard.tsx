@@ -2,10 +2,7 @@
 
 import { useCallback, useState } from "react"
 import { CalendarDays, Users } from "lucide-react"
-import { AcademySection } from "@/components/academy-section"
 import { AuthScreen } from "@/components/auth-screen"
-import { CooperativeSection } from "@/components/cooperative-section"
-import { FinanceSection } from "@/components/finance-section"
 import { TopBar } from "@/components/top-bar"
 import { NextMatchCard } from "@/components/next-match-card"
 import { QuickStats } from "@/components/quick-stats"
@@ -17,6 +14,7 @@ import { SquadSection } from "@/components/squad-section"
 import { TacticsSection } from "@/components/tactics-section"
 import { MarketSection } from "@/components/market-section"
 import { LeagueSection } from "@/components/league-section"
+import dynamic from "next/dynamic"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -35,7 +33,12 @@ import { createLeague, fetchLeague, joinLeague, submitTurn, type LeagueResponse 
 import { useGame } from "@/lib/game-provider"
 import type { GameSave, Match, MatchEvent } from "@/lib/types"
 
-export type TabId = "dashboard" | "squad" | "tactics" | "market" | "league" | "academy" | "finance" | "coop"
+const AcademySection = dynamic(() => import("@/components/academy-section").then((mod) => mod.AcademySection))
+const CooperativeSection = dynamic(() => import("@/components/cooperative-section").then((mod) => mod.CooperativeSection))
+const FinanceSection = dynamic(() => import("@/components/finance-section").then((mod) => mod.FinanceSection))
+const SettingsSection = dynamic(() => import("@/components/settings-section").then((mod) => mod.SettingsSection))
+
+export type TabId = "dashboard" | "squad" | "tactics" | "market" | "league" | "academy" | "finance" | "coop" | "settings"
 
 function SectionTitle({ title, subtitle }: { title: string; subtitle: string }) {
   return (
@@ -352,6 +355,13 @@ export default function Dashboard() {
           <>
             <SectionTitle title="Co-op Hub" subtitle="League chat, turn status and commissioner controls" />
             <CooperativeSection />
+          </>
+        )}
+
+        {activeTab === "settings" && (
+          <>
+            <SectionTitle title="Settings" subtitle="Club assets, themes, sounds and license packs" />
+            <SettingsSection />
           </>
         )}
       </main>

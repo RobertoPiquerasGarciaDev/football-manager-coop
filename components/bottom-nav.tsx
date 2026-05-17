@@ -102,6 +102,16 @@ const navItems: NavItem[] = [
       </svg>
     ),
   },
+  {
+    id: "settings",
+    label: "Settings",
+    icon: (active) => (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active ? "var(--amber)" : "currentColor"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 15.5A3.5 3.5 0 1112 8a3.5 3.5 0 010 7.5z" fill={active ? "var(--amber)" : "none"} fillOpacity={active ? 0.2 : 0} />
+        <path d="M19.4 15a1.8 1.8 0 00.36 1.98l.05.05a2 2 0 01-2.83 2.83l-.05-.05A1.8 1.8 0 0015 19.4a1.8 1.8 0 00-1 .6 1.8 1.8 0 00-.4 1.1V21a2 2 0 01-4 0v-.08A1.8 1.8 0 008.6 19.4a1.8 1.8 0 00-1.98.36l-.05.05a2 2 0 01-2.83-2.83l.05-.05A1.8 1.8 0 004.6 15a1.8 1.8 0 00-.6-1 1.8 1.8 0 00-1.1-.4H3a2 2 0 010-4h.08A1.8 1.8 0 004.6 8.6a1.8 1.8 0 00-.36-1.98l-.05-.05a2 2 0 012.83-2.83l.05.05A1.8 1.8 0 009 4.6a1.8 1.8 0 001-.6 1.8 1.8 0 00.4-1.1V3a2 2 0 014 0v.08A1.8 1.8 0 0015.4 4.6a1.8 1.8 0 001.98-.36l.05-.05a2 2 0 012.83 2.83l-.05.05A1.8 1.8 0 0019.4 9c0 .4.22.76.6 1 .32.2.7.32 1.1.32H21a2 2 0 010 4h-.08A1.8 1.8 0 0019.4 15z" />
+      </svg>
+    ),
+  },
 ]
 
 interface BottomNavProps {

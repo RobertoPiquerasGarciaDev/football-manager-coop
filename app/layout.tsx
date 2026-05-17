@@ -10,9 +10,15 @@ const inter = Inter({
 })
 
 export const metadata: Metadata = {
-  title: 'Football Manager Cooperative',
-  description: 'Mobile football management game - Build your dream team cooperatively',
+  title: 'Pitch Perfect',
+  description: 'Commercial cooperative football management game',
   generator: 'v0.app',
+  manifest: '/manifest.json',
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'black-translucent',
+    title: 'Pitch Perfect',
+  },
   icons: {
     icon: [
       {

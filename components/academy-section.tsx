@@ -61,11 +61,31 @@ export function AcademySection() {
 
       <div className="grid grid-cols-2 gap-2">
         {plans.map((plan) => (
-          <Button key={plan.id} type="button" variant="secondary" className="h-auto flex-col items-start p-3" onClick={() => applyPlan(plan.id)}>
+          <Button
+            key={plan.id}
+            type="button"
+            variant="secondary"
+            draggable
+            className="h-auto cursor-grab flex-col items-start p-3 active:cursor-grabbing"
+            onClick={() => applyPlan(plan.id)}
+            onDragStart={(event) => event.dataTransfer.setData("text/training-plan", plan.id)}
+          >
             <span className="text-xs font-bold">{plan.label}</span>
             <span className="text-[10px] text-muted-foreground">{plan.focus.join(", ")}</span>
           </Button>
         ))}
+      </div>
+
+      <div
+        className="rounded-2xl border border-dashed border-[var(--amber)]/40 bg-[var(--amber)]/10 p-4 text-center"
+        onDragOver={(event) => event.preventDefault()}
+        onDrop={(event) => {
+          event.preventDefault()
+          applyPlan(event.dataTransfer.getData("text/training-plan"))
+        }}
+      >
+        <p className="text-xs font-bold text-foreground">Drag a weekly training block here</p>
+        <p className="text-[11px] text-muted-foreground">Drop to activate the plan for next matchday progression.</p>
       </div>
 
       <div className="flex flex-col gap-2">
