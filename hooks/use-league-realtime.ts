@@ -19,22 +19,32 @@ export function useLeagueRealtime({ leagueId, onTurnChange }: UseLeagueRealtimeO
       .channel(`league-realtime:${leagueId}`)
       .on(
         "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "turns",
-          filter: `league_id=eq.${leagueId}`,
-        },
+        { event: "*", schema: "public", table: "turns", filter: `league_id=eq.${leagueId}` },
         onTurnChange,
       )
       .on(
         "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "league_events",
-          filter: `league_id=eq.${leagueId}`,
-        },
+        { event: "*", schema: "public", table: "league_events", filter: `league_id=eq.${leagueId}` },
+        onTurnChange,
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "leagues", filter: `id=eq.${leagueId}` },
+        onTurnChange,
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "matches", filter: `league_id=eq.${leagueId}` },
+        onTurnChange,
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "standings", filter: `league_id=eq.${leagueId}` },
+        onTurnChange,
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "transfers", filter: `league_id=eq.${leagueId}` },
         onTurnChange,
       )
       .subscribe()

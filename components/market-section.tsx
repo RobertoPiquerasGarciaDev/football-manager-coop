@@ -45,7 +45,13 @@ function listingDeadlineLabel(deadlineAt: string | null): string | undefined {
   return `${days}d left`
 }
 
-export function MarketSection() {
+export function MarketSection({
+  isMarketOpen = true,
+  onCreateTransfer,
+}: {
+  isMarketOpen?: boolean
+  onCreateTransfer?: (playerName: string, fee: number) => Promise<void>
+}) {
   const {
     getMarketBrowsePlayers,
     getMarketStats,
@@ -67,6 +73,7 @@ export function MarketSection() {
   const [tab, setTab] = useState<MarketTab>("browse")
   const [posFilter, setPosFilter] = useState<(typeof posFilters)[number]>("All")
   const [search, setSearch] = useState("")
+  const [pendingTransferId, setPendingTransferId] = useState<string | null>(null)
 
   const filtered = marketPlayers.filter(({ player }) => {
     if (posFilter !== "All" && player.positionGroup !== posFilter) return false
@@ -119,6 +126,11 @@ export function MarketSection() {
 
       {(tab === "browse" || tab === "watchlist") && (
         <>
+          {!isMarketOpen && (
+            <div className="rounded-xl border border-border/50 bg-secondary/40 p-3 text-xs text-muted-foreground">
+              Mercado cerrado. Las ofertas se reabriran en el mercado de invierno.
+            </div>
+          )}
           <div className="flex flex-col gap-2">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -155,6 +167,16 @@ export function MarketSection() {
               return (
                 <button
                   key={player.id}
+                  disabled={!isMarketOpen || pendingTransferId === player.id}
+                  onClick={async () => {
+                    if (!onCreateTransfer) return
+                    setPendingTransferId(player.id)
+                    try {
+                      await onCreateTransfer(player.displayName, player.marketValue)
+                    } finally {
+                      setPendingTransferId(null)
+                    }
+                  }}
                   className="flex items-center gap-3 p-3 rounded-xl bg-card border border-border/50 hover:bg-secondary/50 active:scale-[0.99] transition-all text-left w-full group"
                 >
                   <div className="relative shrink-0">

@@ -4,6 +4,7 @@ import { ChevronRight, ArrowUp, ArrowDown, Minus } from "lucide-react"
 import type { MatchResultCode, PositionChange } from "@/lib/types"
 import { formatGoalDifference } from "@/lib/format"
 import { useGame } from "@/lib/game-provider"
+import type { StandingRow } from "@/lib/api"
 
 function FormIndicator({ result }: { result: MatchResultCode }) {
   const config = {
@@ -24,10 +25,18 @@ function PositionChangeIcon({ change }: { change: PositionChange }) {
   return <Minus className="w-3 h-3 text-muted-foreground/40" />
 }
 
-export function LeagueTable() {
+export function LeagueTable({ onlineStandings }: { onlineStandings?: StandingRow[] }) {
   const { getLeague, getLeagueTableRows, getSeason } = useGame()
   const league = getLeague()
-  const teams = getLeagueTableRows(5)
+  const localTeams = getLeagueTableRows(5)
+  const teams = onlineStandings?.slice(0, 8).map((standing, index) => ({
+    ...standing,
+    position: index + 1,
+    positionChange: "same" as const,
+    isUserClub: false,
+    club: { name: standing.clubName },
+    form: [] as const,
+  })) ?? localTeams
 
   return (
     <div className="mx-4 mt-3 mb-4" aria-label="League standings">
@@ -64,7 +73,9 @@ export function LeagueTable() {
                 <th className="py-2.5 px-2 text-center text-[10px] font-semibold text-muted-foreground uppercase tracking-wider w-8" scope="col">W</th>
                 <th className="py-2.5 px-2 text-center text-[10px] font-semibold text-muted-foreground uppercase tracking-wider w-8" scope="col">D</th>
                 <th className="py-2.5 px-2 text-center text-[10px] font-semibold text-muted-foreground uppercase tracking-wider w-8" scope="col">L</th>
-                <th className="py-2.5 px-2 text-center text-[10px] font-semibold text-muted-foreground uppercase tracking-wider w-10" scope="col">GD</th>
+                <th className="py-2.5 px-2 text-center text-[10px] font-semibold text-muted-foreground uppercase tracking-wider w-8" scope="col">GF</th>
+                <th className="py-2.5 px-2 text-center text-[10px] font-semibold text-muted-foreground uppercase tracking-wider w-8" scope="col">GC</th>
+                <th className="py-2.5 px-2 text-center text-[10px] font-semibold text-muted-foreground uppercase tracking-wider w-10" scope="col">DG</th>
                 <th className="py-2.5 px-2 text-center text-[10px] font-semibold text-muted-foreground uppercase tracking-wider w-10" scope="col">Pts</th>
                 <th className="py-2.5 px-2 pr-4 text-center text-[10px] font-semibold text-muted-foreground uppercase tracking-wider" scope="col">Form</th>
               </tr>
@@ -106,6 +117,8 @@ export function LeagueTable() {
                     <td className="py-3 px-2 text-center text-[13px] text-foreground font-medium">{row.won}</td>
                     <td className="py-3 px-2 text-center text-[13px] text-muted-foreground font-medium">{row.drawn}</td>
                     <td className="py-3 px-2 text-center text-[13px] text-muted-foreground font-medium">{row.lost}</td>
+                    <td className="py-3 px-2 text-center text-[13px] text-muted-foreground font-medium">{row.goalsFor}</td>
+                    <td className="py-3 px-2 text-center text-[13px] text-muted-foreground font-medium">{row.goalsAgainst}</td>
                     <td className="py-3 px-2 text-center">
                       <span
                         className={`text-[13px] font-semibold ${row.goalDifference >= 0 ? "text-[var(--success-green)]" : "text-[var(--alert-red)]"}`}

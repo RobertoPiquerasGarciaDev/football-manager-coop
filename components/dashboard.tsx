@@ -27,9 +27,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { useAuth } from "@/hooks/use-auth"
+import { useLeagueSync } from "@/hooks/use-league-sync"
 import { useLeagueRealtime } from "@/hooks/use-league-realtime"
 import { useToast } from "@/hooks/use-toast"
-import { createLeague, fetchLeague, joinLeague, listLeagues, markLeagueReady, submitTurn, type LeagueResponse } from "@/lib/api"
+import { createLeague, createTransfer, fetchLeague, joinLeague, listLeagues, markLeagueReady, markNotificationRead, simulateMatchday, submitTurn, type LeagueResponse } from "@/lib/api"
 import { useGame } from "@/lib/game-provider"
 import { useNotifications } from "@/lib/notifications"
 import type { GameSave, Match, MatchEvent } from "@/lib/types"
@@ -101,34 +102,44 @@ export default function Dashboard() {
   const [leagueSyncMessage, setLeagueSyncMessage] = useState<string | null>(null)
   const [leagueSyncError, setLeagueSyncError] = useState<string | null>(null)
   const [remoteLeague, setRemoteLeague] = useState<LeagueResponse | null>(null)
+  const [selectedLeagueId, setSelectedLeagueId] = useState<string | null>(null)
   const [isLeagueActionPending, setIsLeagueActionPending] = useState(false)
   const [isTurnSubmitting, setIsTurnSubmitting] = useState(false)
+  const [isTurnConfirmOpen, setIsTurnConfirmOpen] = useState(false)
   const [showOnboarding, setShowOnboarding] = useState(() =>
     typeof window === "undefined" ? false : window.localStorage.getItem("fm-coop-onboarded") !== "true",
   )
   const { isLoading, token, user, logout } = useAuth()
   const { toast } = useToast()
-  const { save, advanceTurn } = useGame()
+  const { save } = useGame()
   const notifications = useNotifications(token, user?.id ?? null)
+  const leagueSync = useLeagueSync({
+    token,
+    leagueId: selectedLeagueId,
+    onMessage: setLeagueSyncMessage,
+  })
 
   const goals = resultMatch?.events.filter((event) => event.type === "goal") ?? []
   const cards =
     resultMatch?.events.filter((event) => event.type === "yellow_card" || event.type === "red_card") ?? []
 
-  function handleSimulateMatchday() {
-    if (remoteLeague?.status !== "active") {
-      toast({ title: "Liga bloqueada", description: "Debes estar en una liga activa para simular jornadas." })
+  useEffect(() => {
+    if (leagueSync.league) setRemoteLeague(leagueSync.league)
+  }, [leagueSync.league])
+
+  async function handleSimulateMatchday() {
+    if (!token || !remoteLeague?.id) return
+    if (remoteLeague.status !== "active") {
+      toast({ title: "Liga bloqueada", description: "El mercado esta abierto. Cierra la ventana antes de simular." })
       return
     }
-    const nextSave = advanceTurn()
-    const simulatedMatch = findSimulatedUserMatch(save, nextSave)
-    setResultSave(nextSave)
-    setResultMatch(simulatedMatch)
-    setIsResultOpen(true)
-    toast({
-      title: "Matchday simulated",
-      description: simulatedMatch ? "Results, morale, finances and training progression were applied." : "No scheduled matches were pending.",
-    })
+    try {
+      await simulateMatchday(token, remoteLeague.id)
+      await leagueSync.refresh()
+      toast({ title: "Jornada simulada", description: "Todos los partidos, incluidos bots, se guardaron en Supabase." })
+    } catch (error) {
+      toast({ title: "No se pudo simular", description: error instanceof Error ? error.message : "Intentalo de nuevo" })
+    }
   }
 
   const refreshLeagues = useCallback(async () => {
@@ -178,6 +189,19 @@ export default function Dashboard() {
   const readyCount = readyUsers.length
   const managerCount = remoteLeague?.clubs?.length ?? remoteLeague?.turnStatus?.total ?? 0
   const isReady = user?.id ? readyUsers.includes(user.id) : false
+  const turnRows = (remoteLeague?.turns ?? []) as Array<{ userId?: string | null; matchday?: number }>
+  const hasSubmittedTurn = turnRows.some((turn) => turn.userId === user?.id && turn.matchday === remoteLeague?.currentMatchday)
+  const selectedTactics = userClubInLeague?.tactics ?? {}
+  const selectedFormation = typeof selectedTactics.formation === "string" ? selectedTactics.formation : "4-3-3"
+  const selectedLineup = Array.isArray(selectedTactics.lineup) && selectedTactics.lineup.length > 0
+    ? selectedTactics.lineup.slice(0, 11)
+    : Array.from({ length: 11 }, (_, index) => `Titular ${index + 1}`)
+  const injuredStarters = selectedLineup.filter((player) => {
+    if (!player || typeof player !== "object") return false
+    const maybePlayer = player as { injured?: boolean; status?: string }
+    return maybePlayer.injured === true || maybePlayer.status === "injured"
+  })
+  const isMarketOpen = remoteLeague?.status === "summer_market" || remoteLeague?.status === "winter_market"
 
   async function handleCreateLeague() {
     if (!token) return
@@ -188,6 +212,7 @@ export default function Dashboard() {
     try {
       const league = await createLeague(token, leagueName.trim() || `${save.name} League`, selectedClub)
       setRemoteLeague(league)
+      setSelectedLeagueId(league.id)
       setLeagueSyncMessage(`Liga creada. Codigo: ${league.inviteCode ?? "sin codigo"}`)
       toast({ title: "Cooperative league created", description: `Invite code: ${league.inviteCode ?? "pending"}` })
       await refreshLeagues()
@@ -207,6 +232,7 @@ export default function Dashboard() {
     try {
       const league = await joinLeague(token, inviteCode, selectedClub)
       setRemoteLeague(league)
+      setSelectedLeagueId(league.id)
       setLeagueSyncMessage(`Te has unido a ${league.name}`)
       toast({ title: "Joined league", description: league.name })
       await refreshLeagues()
@@ -249,9 +275,10 @@ export default function Dashboard() {
       const response = await submitTurn(token, remoteLeague.id, {
         clubId,
         matchday: remoteLeague.currentMatchday,
-        lineup: save.clubs.find((club) => club.id === save.userClubId)?.tactics.lineup ?? [],
-        tactics: save.clubs.find((club) => club.id === save.userClubId)?.tactics ?? {},
+        lineup: selectedLineup,
+        tactics: selectedTactics,
       })
+      setIsTurnConfirmOpen(false)
       setRemoteLeague((league) => (league ? { ...league, turnStatus: response.turnStatus } : league))
       setLeagueSyncMessage(
         response.advanced
@@ -273,6 +300,17 @@ export default function Dashboard() {
       setLeagueSyncError(error instanceof Error ? error.message : "No se pudo enviar el turno")
     } finally {
       setIsTurnSubmitting(false)
+    }
+  }
+
+  async function handleCreateTransfer(playerName: string, fee: number) {
+    if (!token || !remoteLeague?.id) return
+    try {
+      await createTransfer(token, remoteLeague.id, playerName, fee)
+      await leagueSync.refresh()
+      toast({ title: "Fichaje sincronizado", description: `${playerName} aparece en el feed realtime de la liga.` })
+    } catch (error) {
+      toast({ title: "Mercado bloqueado", description: error instanceof Error ? error.message : "No se pudo crear el fichaje" })
     }
   }
 
@@ -310,7 +348,10 @@ export default function Dashboard() {
                 <button
                   key={league.id}
                   type="button"
-                  onClick={() => setRemoteLeague(league)}
+                  onClick={() => {
+                    setRemoteLeague(league)
+                    setSelectedLeagueId(league.id)
+                  }}
                   className="rounded-2xl border border-border/50 bg-secondary/30 p-3 text-left transition hover:border-[var(--amber)] hover:bg-[var(--amber)]/10 active:scale-[0.99]"
                 >
                   <div className="flex items-center justify-between gap-2">
@@ -408,10 +449,13 @@ export default function Dashboard() {
     )
   }
 
-  if (remoteLeague.status !== "active") {
+  if (remoteLeague.status !== "active" && !isMarketOpen) {
     return (
       <div className="min-h-screen bg-background max-w-md mx-auto px-4 py-6">
-        <Button type="button" variant="ghost" size="sm" onClick={() => setRemoteLeague(null)}>
+        <Button type="button" variant="ghost" size="sm" onClick={() => {
+          setRemoteLeague(null)
+          setSelectedLeagueId(null)
+        }}>
           <Home className="h-4 w-4" />
           Volver al hub
         </Button>
@@ -479,7 +523,11 @@ export default function Dashboard() {
       {/* Ambient background glow */}
       <div className="fixed top-0 left-1/2 -translate-x-1/2 w-[600px] h-[400px] rounded-full bg-[var(--amber)] opacity-[0.03] blur-[120px] pointer-events-none" />
 
-      <TopBar notificationCount={notifications.unreadCount} onNotificationsClick={() => notifications.setIsOpen(true)} />
+      <TopBar
+        notificationCount={notifications.unreadCount}
+        onNotificationsClick={() => notifications.setIsOpen(true)}
+        marketStatus={isMarketOpen ? getLeagueStatusLabel(remoteLeague) : "Mercado cerrado · temporada activa"}
+      />
       {showOnboarding && (
         <div className="px-4 pt-3">
           <div className="rounded-2xl border border-[var(--amber)]/30 bg-[var(--amber)]/10 p-4">
@@ -520,7 +568,10 @@ export default function Dashboard() {
                   {userClubInLeague?.name ?? "Club sin asignar"} · {getLeagueStatusLabel(remoteLeague)}
                 </p>
               </div>
-              <Button type="button" variant="ghost" size="sm" onClick={() => setRemoteLeague(null)}>
+              <Button type="button" variant="ghost" size="sm" onClick={() => {
+                setRemoteLeague(null)
+                setSelectedLeagueId(null)
+              }}>
                 Hub
               </Button>
             </div>
@@ -529,19 +580,30 @@ export default function Dashboard() {
                 {leagueSyncMessage ?? `Liga activa: ${remoteLeague?.name}`}
               </p>
             )}
-            {remoteLeague && (
+            {remoteLeague.status === "active" && (
               <Button
                 type="button"
                 variant="outline"
-                onClick={handleSubmitTurn}
-                disabled={isTurnSubmitting || !remoteLeague.clubs?.some((club) => club.managerUserId === user?.id)}
+                onClick={() => setIsTurnConfirmOpen(true)}
+                disabled={hasSubmittedTurn || isTurnSubmitting || !remoteLeague.clubs?.some((club) => club.managerUserId === user?.id)}
               >
-                {isTurnSubmitting ? "Enviando turno..." : "Enviar Turno"}
+                {hasSubmittedTurn ? "✓ Turno enviado" : isTurnSubmitting ? "Confirmando..." : "Confirmar Alineación y Táctica"}
               </Button>
+            )}
+            {isMarketOpen && (
+              <div className="rounded-2xl border border-[var(--amber)]/30 bg-[var(--amber)]/10 p-3">
+                <p className="text-xs font-black text-foreground">{getLeagueStatusLabel(remoteLeague)}</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  El mercado esta abierto: puedes fichar, pero la simulacion de jornada esta bloqueada.
+                </p>
+                <Button type="button" size="sm" className="mt-2 w-full" onClick={handleReady} disabled={isLeagueActionPending || isReady}>
+                  {isReady ? "Listo para cerrar mercado" : "Listo para empezar temporada"}
+                </Button>
+              </div>
             )}
             {remoteLeague?.turnStatus && (
               <p className="text-[11px] text-muted-foreground">
-                Turnos enviados: {remoteLeague.turnStatus.submitted}/{remoteLeague.turnStatus.total}
+                {remoteLeague.turnStatus.submitted}/{remoteLeague.turnStatus.total} managers han confirmado
               </p>
             )}
             {leagueSyncError && <p className="text-[11px] text-destructive">{leagueSyncError}</p>}
@@ -555,17 +617,18 @@ export default function Dashboard() {
             <div className="px-4 pt-4">
               <Button
                 onClick={handleSimulateMatchday}
+                disabled={isMarketOpen}
                 className="w-full bg-[var(--amber)] text-[var(--primary-foreground)] hover:bg-[var(--amber)]/90"
               >
                 <CalendarDays className="w-4 h-4" />
-                Simular Jornada
+                {isMarketOpen ? "Jornada bloqueada por mercado abierto" : "Simular Jornada"}
               </Button>
             </div>
             <NextMatchCard />
             <QuickStats />
             <SquadMorale />
             <TransferAlerts />
-            <LeagueTable />
+            <LeagueTable onlineStandings={remoteLeague.standings} />
           </>
         )}
 
@@ -586,7 +649,7 @@ export default function Dashboard() {
         {activeTab === "market" && (
           <>
             <SectionTitle title="Transfer Market" subtitle="Scout, bid & negotiate player transfers" />
-            <MarketSection />
+            <MarketSection isMarketOpen={isMarketOpen} onCreateTransfer={handleCreateTransfer} />
           </>
         )}
 
@@ -647,9 +710,23 @@ export default function Dashboard() {
               {notifications.notifications.map((item) => (
                 <div key={item.id} className="rounded-2xl border border-border/50 bg-secondary/30 p-3">
                   <p className="text-xs font-black text-foreground">{String(item.payload.message ?? item.type)}</p>
-                  <p className="mt-1 text-[11px] text-muted-foreground">
-                    {new Date(item.createdAt).toLocaleString()} · {item.read ? "Leida" : "No leida"}
-                  </p>
+                  <div className="mt-1 flex items-center justify-between gap-2">
+                    <p className="text-[11px] text-muted-foreground">
+                      {new Date(item.createdAt).toLocaleString()} · {item.read ? "Leida" : "No leida"}
+                    </p>
+                    {!item.read && token && (
+                      <button
+                        type="button"
+                        className="text-[10px] font-bold text-[var(--amber)]"
+                        onClick={async () => {
+                          await markNotificationRead(token, item.id)
+                          await notifications.refresh()
+                        }}
+                      >
+                        Marcar leida
+                      </button>
+                    )}
+                  </div>
                 </div>
               ))}
               {notifications.notifications.length === 0 && (
@@ -661,6 +738,41 @@ export default function Dashboard() {
           </aside>
         </div>
       )}
+
+      <Dialog open={isTurnConfirmOpen} onOpenChange={setIsTurnConfirmOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Confirmar Alineación y Táctica</DialogTitle>
+            <DialogDescription>
+              Revisa los 11 titulares y la formación antes de bloquear tu turno de la jornada {remoteLeague.currentMatchday}.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-3">
+            <div className="rounded-2xl border border-border/50 bg-secondary/30 p-3">
+              <p className="text-xs font-bold text-muted-foreground">Formación elegida</p>
+              <p className="mt-1 text-lg font-black text-foreground">{selectedFormation}</p>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {selectedLineup.map((player, index) => (
+                <div key={`${index}-${String(player)}`} className="rounded-xl border border-border/50 bg-card p-2">
+                  <p className="text-[10px] font-bold text-muted-foreground">#{index + 1}</p>
+                  <p className="truncate text-xs font-bold text-foreground">
+                    {typeof player === "string" ? player : "Jugador confirmado"}
+                  </p>
+                </div>
+              ))}
+            </div>
+            {injuredStarters.length > 0 && (
+              <p className="rounded-xl bg-destructive/10 p-3 text-xs text-destructive">
+                Advertencia: hay {injuredStarters.length} jugador(es) lesionado(s) en el XI.
+              </p>
+            )}
+            <Button type="button" onClick={handleSubmitTurn} disabled={isTurnSubmitting}>
+              {isTurnSubmitting ? "Confirmando..." : "Confirmar turno"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={isResultOpen} onOpenChange={setIsResultOpen}>
         <DialogContent className="max-w-md">

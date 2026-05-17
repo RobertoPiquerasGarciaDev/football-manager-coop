@@ -71,6 +71,7 @@ export type ClubAvailability = {
 export type NotificationItem = {
   id: string
   userId: string
+  leagueId?: string | null
   type: string
   payload: Record<string, unknown>
   read: boolean
@@ -192,10 +193,39 @@ export function submitTurn(token: string, leagueId: string, payload: TurnPayload
   })
 }
 
+export function simulateMatchday(token: string, leagueId: string) {
+  return apiFetch<{ ok: boolean; turnStatus: TurnStatus; advanced: boolean; standings: StandingRow[] }>(
+    `/leagues/${leagueId}/simulate-matchday`,
+    {
+      method: "POST",
+      token,
+    },
+  )
+}
+
+export function fetchMatchday(token: string, leagueId: string) {
+  return apiFetch<{ leagueId: string; matchday: number; status: string; turnStatus: TurnStatus; matches: unknown[]; turns: unknown[] }>(
+    `/leagues/${leagueId}/matchday`,
+    { token },
+  )
+}
+
 export function getStandings(token: string, leagueId: string): Promise<StandingRow[]> {
   return apiFetch<StandingRow[]>(`/leagues/${leagueId}/standings`, { token })
 }
 
 export function getNotifications(token: string): Promise<NotificationItem[]> {
   return apiFetch<NotificationItem[]>("/notifications", { token })
+}
+
+export function markNotificationRead(token: string, notificationId: string): Promise<NotificationItem> {
+  return apiFetch<NotificationItem>(`/notifications/${notificationId}/read`, { method: "POST", token })
+}
+
+export function createTransfer(token: string, leagueId: string, playerName: string, fee: number) {
+  return apiFetch<{ ok: boolean; transfer: unknown }>(`/leagues/${leagueId}/transfers`, {
+    method: "POST",
+    token,
+    body: JSON.stringify({ playerName, fee }),
+  })
 }

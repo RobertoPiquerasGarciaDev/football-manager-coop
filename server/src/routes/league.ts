@@ -89,10 +89,24 @@ type TransferWindowRow = {
 type NotificationRow = {
   id: string
   user_id: string
+  league_id: string | null
   type: string
   payload: Record<string, unknown>
   read: boolean
   created_at: Date
+}
+
+type StandingDbRow = {
+  club_id: string
+  club_name: string
+  played: number
+  won: number
+  drawn: number
+  lost: number
+  goals_for: number
+  goals_against: number
+  goal_difference: number
+  points: number
 }
 
 type ClubInput = {
@@ -133,6 +147,13 @@ const clubProfiles: Record<string, { name: string; shortName: string }> = {
 }
 
 const clubKeys = Object.keys(clubProfiles)
+
+const botProfiles = [
+  { name: "Northbridge Athletic", shortName: "NBA" },
+  { name: "Valencia Coast", shortName: "VLC" },
+  { name: "Royal Borough", shortName: "RYB" },
+  { name: "Olympic United", shortName: "OLU" },
+]
 
 function jsonb(value: unknown): string {
   return JSON.stringify(value)
@@ -226,10 +247,26 @@ function mapNotification(row: NotificationRow) {
   return {
     id: row.id,
     userId: row.user_id,
+    leagueId: row.league_id,
     type: row.type,
     payload: row.payload,
     read: row.read,
     createdAt: row.created_at,
+  }
+}
+
+function mapStandingRow(row: StandingDbRow): StandingRow {
+  return {
+    clubId: row.club_id,
+    clubName: row.club_name,
+    played: row.played,
+    won: row.won,
+    drawn: row.drawn,
+    lost: row.lost,
+    goalsFor: row.goals_for,
+    goalsAgainst: row.goals_against,
+    goalDifference: row.goal_difference,
+    points: row.points,
   }
 }
 
@@ -294,9 +331,29 @@ async function notifyLeagueMembers(
   const members = await client.query<{ user_id: string }>("SELECT user_id FROM league_members WHERE league_id = $1", [leagueId])
   for (const member of members.rows) {
     await client.query(
-      `INSERT INTO notifications (user_id, type, payload)
-       VALUES ($1, $2, $3)`,
-      [member.user_id, type, jsonb({ leagueId, ...payload })],
+      `INSERT INTO notifications (user_id, league_id, type, payload)
+       VALUES ($1, $2, $3, $4)`,
+      [member.user_id, leagueId, type, jsonb({ leagueId, ...payload })],
+    )
+  }
+}
+
+async function createBotClubs(client: { query: typeof pool.query }, leagueId: string) {
+  const existing = await client.query<{ count: string }>("SELECT COUNT(*) AS count FROM clubs WHERE league_id = $1", [leagueId])
+  const remainingSlots = Math.max(0, 6 - Number(existing.rows[0]?.count ?? 0))
+  for (const profile of botProfiles.slice(0, remainingSlots)) {
+    await client.query(
+      `INSERT INTO clubs (league_id, manager_user_id, name, short_name, squad, tactics, finances)
+       SELECT $1, NULL, $2, $3, $4, $5, $6
+       WHERE NOT EXISTS (SELECT 1 FROM clubs WHERE league_id = $1 AND name = $2)`,
+      [
+        leagueId,
+        profile.name,
+        profile.shortName,
+        jsonb([]),
+        jsonb({ formation: "4-4-2", lineup: [], ai: true }),
+        jsonb({ balance: 50000000, transferBudget: 25000000, weeklyWageBill: 0, isBot: true }),
+      ],
     )
   }
 }
@@ -339,7 +396,7 @@ async function ensureMatchdayMatches(client: { query: typeof pool.query }, leagu
     const away = clubs.rows[index + 1]
     const result = await client.query<MatchRow>(
       `INSERT INTO matches (league_id, matchday, home_club_id, away_club_id, status, events)
-       VALUES ($1, $2, $3, $4, 'scheduled', $5)
+       VALUES ($1, $2, $3, $4, 'pending', $5)
        ON CONFLICT (league_id, matchday, home_club_id, away_club_id) DO NOTHING
        RETURNING *`,
       [leagueId, matchday, home.id, away.id, jsonb([])],
@@ -347,6 +404,87 @@ async function ensureMatchdayMatches(client: { query: typeof pool.query }, leagu
     if (result.rows[0]) created.push(result.rows[0])
   }
   return created
+}
+
+async function recalculateStandings(client: { query: typeof pool.query }, leagueId: string) {
+  const clubs = await client.query<ClubRow>("SELECT * FROM clubs WHERE league_id = $1 ORDER BY name ASC", [leagueId])
+  const matches = await client.query<MatchRow>(
+    "SELECT * FROM matches WHERE league_id = $1 AND status IN ('played', 'finished') AND home_score IS NOT NULL AND away_score IS NOT NULL",
+    [leagueId],
+  )
+  const table = new Map<string, StandingRow>()
+
+  for (const club of clubs.rows) {
+    table.set(club.id, {
+      clubId: club.id,
+      clubName: club.name,
+      played: 0,
+      won: 0,
+      drawn: 0,
+      lost: 0,
+      goalsFor: 0,
+      goalsAgainst: 0,
+      goalDifference: 0,
+      points: 0,
+    })
+  }
+
+  for (const match of matches.rows) {
+    const home = table.get(match.home_club_id)
+    const away = table.get(match.away_club_id)
+    if (!home || !away || match.home_score == null || match.away_score == null) continue
+    const drawn = match.home_score === match.away_score
+    const homeWon = match.home_score > match.away_score
+    const awayWon = match.away_score > match.home_score
+    home.played += 1
+    away.played += 1
+    home.won += homeWon ? 1 : 0
+    home.drawn += drawn ? 1 : 0
+    home.lost += awayWon ? 1 : 0
+    away.won += awayWon ? 1 : 0
+    away.drawn += drawn ? 1 : 0
+    away.lost += homeWon ? 1 : 0
+    home.goalsFor += match.home_score
+    home.goalsAgainst += match.away_score
+    away.goalsFor += match.away_score
+    away.goalsAgainst += match.home_score
+    home.goalDifference = home.goalsFor - home.goalsAgainst
+    away.goalDifference = away.goalsFor - away.goalsAgainst
+    home.points += homeWon ? 3 : drawn ? 1 : 0
+    away.points += awayWon ? 3 : drawn ? 1 : 0
+  }
+
+  for (const row of table.values()) {
+    await client.query(
+      `INSERT INTO standings (league_id, club_id, played, won, drawn, lost, goals_for, goals_against, goal_difference, points)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       ON CONFLICT (league_id, club_id)
+       DO UPDATE SET played = EXCLUDED.played, won = EXCLUDED.won, drawn = EXCLUDED.drawn,
+         lost = EXCLUDED.lost, goals_for = EXCLUDED.goals_for, goals_against = EXCLUDED.goals_against,
+         goal_difference = EXCLUDED.goal_difference, points = EXCLUDED.points, updated_at = NOW()`,
+      [
+        leagueId,
+        row.clubId,
+        row.played,
+        row.won,
+        row.drawn,
+        row.lost,
+        row.goalsFor,
+        row.goalsAgainst,
+        row.goalDifference,
+        row.points,
+      ],
+    )
+  }
+
+  return [...table.values()].sort(
+    (a, b) =>
+      b.points - a.points ||
+      b.goalDifference - a.goalDifference ||
+      b.goalsFor - a.goalsFor ||
+      a.goalsAgainst - b.goalsAgainst ||
+      a.clubName.localeCompare(b.clubName),
+  )
 }
 
 async function advanceLeagueIfReady(league: LeagueRow, matchday: number) {
@@ -373,7 +511,7 @@ async function advanceLeagueIfReady(league: LeagueRow, matchday: number) {
       const awayScore = scoreFor(`${match.away_club_id}:${matchday}:away`)
       const result = await client.query<MatchRow>(
         `UPDATE matches
-         SET status = 'finished', home_score = $1, away_score = $2, played_at = NOW(),
+         SET status = 'played', home_score = $1, away_score = $2, played_at = NOW(),
              events = $3
          WHERE id = $4
          RETURNING *`,
@@ -390,6 +528,7 @@ async function advanceLeagueIfReady(league: LeagueRow, matchday: number) {
       finishedMatches.push(result.rows[0])
     }
 
+    const standings = await recalculateStandings(client, league.id)
     const nextMatchday = matchday + 1
     const nextStatus = nextMatchday === 19 ? "winter_market" : "active"
     const nextPhase = nextMatchday === 19 ? "winter_market" : "season"
@@ -408,6 +547,7 @@ async function advanceLeagueIfReady(league: LeagueRow, matchday: number) {
           nextMatchday,
           turnStatus: status,
           matches: finishedMatches.map(mapMatch),
+          standings,
         }),
       ],
     )
@@ -417,7 +557,11 @@ async function advanceLeagueIfReady(league: LeagueRow, matchday: number) {
         matchday: nextMatchday,
       })
     } else {
-      await notifyLeagueMembers(client, league.id, "matchday_advanced", { matchday, nextMatchday })
+      await notifyLeagueMembers(client, league.id, "matchday_advanced", {
+        message: `Jornada ${matchday} simulada`,
+        matchday,
+        nextMatchday,
+      })
     }
     await client.query("COMMIT")
     console.log("[coop] matchday advanced", { leagueId: league.id, matchday, nextMatchday })
@@ -432,64 +576,17 @@ async function advanceLeagueIfReady(league: LeagueRow, matchday: number) {
 }
 
 async function getStandings(leagueId: string): Promise<StandingRow[]> {
-  const clubs = await pool.query<ClubRow>("SELECT * FROM clubs WHERE league_id = $1 ORDER BY name ASC", [leagueId])
-  const matches = await pool.query<MatchRow>(
-    "SELECT * FROM matches WHERE league_id = $1 AND status = 'finished' AND home_score IS NOT NULL AND away_score IS NOT NULL",
+  const result = await pool.query<StandingDbRow>(
+    `SELECT s.club_id, c.name AS club_name, s.played, s.won, s.drawn, s.lost,
+      s.goals_for, s.goals_against, s.goal_difference, s.points
+     FROM standings s
+     INNER JOIN clubs c ON c.id = s.club_id
+     WHERE s.league_id = $1
+     ORDER BY s.points DESC, s.goal_difference DESC, s.goals_for DESC, s.goals_against ASC, c.name ASC`,
     [leagueId],
   )
-
-  const standings = new Map<string, StandingRow>()
-  for (const club of clubs.rows) {
-    standings.set(club.id, {
-      clubId: club.id,
-      clubName: club.name,
-      played: 0,
-      won: 0,
-      drawn: 0,
-      lost: 0,
-      goalsFor: 0,
-      goalsAgainst: 0,
-      goalDifference: 0,
-      points: 0,
-    })
-  }
-
-  for (const match of matches.rows) {
-    const home = standings.get(match.home_club_id)
-    const away = standings.get(match.away_club_id)
-    if (!home || !away || match.home_score == null || match.away_score == null) continue
-
-    const homeWon = match.home_score > match.away_score
-    const awayWon = match.away_score > match.home_score
-    const drawn = match.home_score === match.away_score
-
-    home.played += 1
-    home.won += homeWon ? 1 : 0
-    home.drawn += drawn ? 1 : 0
-    home.lost += awayWon ? 1 : 0
-    home.goalsFor += match.home_score
-    home.goalsAgainst += match.away_score
-    home.goalDifference = home.goalsFor - home.goalsAgainst
-    home.points += homeWon ? 3 : drawn ? 1 : 0
-
-    away.played += 1
-    away.won += awayWon ? 1 : 0
-    away.drawn += drawn ? 1 : 0
-    away.lost += homeWon ? 1 : 0
-    away.goalsFor += match.away_score
-    away.goalsAgainst += match.home_score
-    away.goalDifference = away.goalsFor - away.goalsAgainst
-    away.points += awayWon ? 3 : drawn ? 1 : 0
-  }
-
-  return [...standings.values()].sort(
-    (a, b) =>
-      b.points - a.points ||
-      b.goalDifference - a.goalDifference ||
-      b.goalsFor - a.goalsFor ||
-      a.goalsAgainst - b.goalsAgainst ||
-      a.clubName.localeCompare(b.clubName),
-  )
+  if (result.rows.length > 0) return result.rows.map(mapStandingRow)
+  return recalculateStandings(pool, leagueId)
 }
 
 leagueRouter.post("/leagues", async (req: AuthenticatedRequest, res: Response) => {
@@ -564,6 +661,16 @@ leagueRouter.post("/leagues", async (req: AuthenticatedRequest, res: Response) =
       insertedClubs.push(clubResult.rows[0])
     }
 
+    if (insertedClubs[0]) {
+      await client.query("UPDATE league_members SET club_id = $3 WHERE league_id = $1 AND user_id = $2", [
+        league.id,
+        userId,
+        insertedClubs[0].id,
+      ])
+    }
+    await createBotClubs(client, league.id)
+    await recalculateStandings(client, league.id)
+
     for (const match of matches) {
       const homeClubId = match.homeClubId ?? match.home_club_id
       const awayClubId = match.awayClubId ?? match.away_club_id
@@ -637,7 +744,14 @@ leagueRouter.post("/leagues/join", async (req: AuthenticatedRequest, res: Respon
     await client.query("BEGIN")
     const selectedClubId = typeof req.body?.clubId === "string" ? req.body.clubId : undefined
     const club = await createManagedClub(client, row.id, userId, "Manager FC", selectedClubId)
+    await client.query("UPDATE league_members SET club_id = $3 WHERE league_id = $1 AND user_id = $2", [
+      row.id,
+      userId,
+      club.id,
+    ])
     await ensureTransferWindow(client, row.id)
+    await createBotClubs(client, row.id)
+    await recalculateStandings(client, row.id)
     await notifyLeagueMembers(client, row.id, "manager_joined", {
       message: `${club.name} joined ${row.name}`,
       clubName: club.name,
@@ -646,7 +760,7 @@ leagueRouter.post("/leagues/join", async (req: AuthenticatedRequest, res: Respon
   } catch (error) {
     await client.query("ROLLBACK")
     console.error("[coop] failed to create joined manager club", { leagueId: row.id, userId, error })
-    res.status(500).json({ error: "Failed to assign club to user" })
+      res.status(500).json({ error: error instanceof Error ? error.message : "Failed to assign club to user" })
     return
   } finally {
     client.release()
@@ -714,7 +828,7 @@ leagueRouter.get("/leagues/:id/clubs/availability", async (req: AuthenticatedReq
   )
 })
 
-leagueRouter.post("/leagues/:id/ready", async (req: AuthenticatedRequest, res: Response) => {
+async function handleReady(req: AuthenticatedRequest, res: Response) {
   const league = await getLeagueById(routeParam(req.params.id))
   const userId = req.user?.id
   if (!league || !userId) {
@@ -745,16 +859,34 @@ leagueRouter.post("/leagues/:id/ready", async (req: AuthenticatedRequest, res: R
     const readyCount = (readyColumn === "winter_ready" ? updated.rows[0].winter_ready : updated.rows[0].summer_ready).length
     let status = league.status
     if (total > 0 && readyCount >= total) {
-      status = "active"
-      await client.query("UPDATE leagues SET status = 'active', updated_at = NOW() WHERE id = $1", [league.id])
-      await client.query("UPDATE league_transfer_windows SET phase = 'season', updated_at = NOW() WHERE league_id = $1", [
+      const openingSummer = window.phase === "lobby"
+      status = openingSummer ? "summer_market" : "active"
+      const nextPhase = openingSummer ? "summer_market" : "season"
+      await client.query("UPDATE leagues SET status = $2, updated_at = NOW() WHERE id = $1", [league.id, status])
+      await client.query(
+        `UPDATE league_transfer_windows
+         SET phase = $2, summer_ready = CASE WHEN $2 = 'summer_market' THEN '{}'::uuid[] ELSE summer_ready END,
+             updated_at = NOW()
+         WHERE league_id = $1`,
+        [league.id, nextPhase],
+      )
+      await client.query(
+        `INSERT INTO transfer_window (league_id, type, status, ready_managers)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (league_id, type)
+         DO UPDATE SET status = EXCLUDED.status, ready_managers = EXCLUDED.ready_managers, updated_at = NOW()`,
+        [league.id, openingSummer ? "summer" : window.phase === "winter_market" ? "winter" : "summer", openingSummer ? "open" : "closed", []],
+      )
+      await notifyLeagueMembers(
+        client,
         league.id,
-      ])
-      await notifyLeagueMembers(client, league.id, "market_closed", { message: "All managers are ready. Season started." })
+        openingSummer ? "market_opened" : "market_closed",
+        { message: openingSummer ? "Mercado de verano abierto" : "All managers are ready. Season started." },
+      )
       await client.query(
         `INSERT INTO league_events (league_id, type, payload)
-         VALUES ($1, 'market_closed', $2)`,
-        [league.id, jsonb({ readyCount, total })],
+         VALUES ($1, $2, $3)`,
+        [league.id, openingSummer ? "market_opened" : "market_closed", jsonb({ readyCount, total })],
       )
     } else {
       await notifyLeagueMembers(client, league.id, "manager_ready", { readyCount, total })
@@ -768,7 +900,9 @@ leagueRouter.post("/leagues/:id/ready", async (req: AuthenticatedRequest, res: R
   } finally {
     client.release()
   }
-})
+}
+
+leagueRouter.post("/leagues/:id/ready", handleReady)
 
 leagueRouter.get("/notifications", async (req: AuthenticatedRequest, res: Response) => {
   const userId = req.user?.id
@@ -782,6 +916,133 @@ leagueRouter.get("/notifications", async (req: AuthenticatedRequest, res: Respon
     [userId],
   )
   res.json(result.rows.map(mapNotification))
+})
+
+leagueRouter.post("/notifications/:id/read", async (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.user?.id
+  if (!userId) {
+    res.status(401).json({ error: "Authentication required" })
+    return
+  }
+
+  const result = await pool.query<NotificationRow>(
+    "UPDATE notifications SET read = TRUE WHERE id = $1 AND user_id = $2 RETURNING *",
+    [routeParam(req.params.id), userId],
+  )
+  if (!result.rows[0]) {
+    res.status(404).json({ error: "Notification not found" })
+    return
+  }
+  res.json(mapNotification(result.rows[0]))
+})
+
+leagueRouter.get("/leagues/:id/matchday", async (req: AuthenticatedRequest, res: Response) => {
+  const league = await getLeagueById(routeParam(req.params.id))
+  if (!league) {
+    res.status(404).json({ error: "League not found" })
+    return
+  }
+  const [turnStatus, matches, turns] = await Promise.all([
+    getTurnStatus(league.id, league.current_matchday),
+    pool.query<MatchRow>("SELECT * FROM matches WHERE league_id = $1 AND matchday = $2 ORDER BY created_at ASC", [
+      league.id,
+      league.current_matchday,
+    ]),
+    pool.query<TurnRow>("SELECT * FROM turns WHERE league_id = $1 AND matchday = $2 ORDER BY submitted_at DESC", [
+      league.id,
+      league.current_matchday,
+    ]),
+  ])
+  res.json({
+    leagueId: league.id,
+    matchday: league.current_matchday,
+    status: league.status,
+    turnStatus,
+    matches: matches.rows.map(mapMatch),
+    turns: turns.rows.map(mapTurn),
+  })
+})
+
+leagueRouter.put("/leagues/:id/transfer-window/ready", async (req: AuthenticatedRequest, res: Response) => {
+  await handleReady(req, res)
+})
+
+leagueRouter.post("/leagues/:id/transfers", async (req: AuthenticatedRequest, res: Response) => {
+  const league = await getLeagueById(routeParam(req.params.id))
+  const userId = req.user?.id
+  if (!league || !userId) {
+    res.status(league ? 401 : 404).json({ error: league ? "Authentication required" : "League not found" })
+    return
+  }
+  if (league.status !== "summer_market" && league.status !== "winter_market") {
+    res.status(409).json({ error: "Transfers are only available during open transfer windows" })
+    return
+  }
+
+  const client = await pool.connect()
+  try {
+    await client.query("BEGIN")
+    const club = await client.query<ClubRow>("SELECT * FROM clubs WHERE league_id = $1 AND manager_user_id = $2", [
+      league.id,
+      userId,
+    ])
+    const playerName = typeof req.body?.playerName === "string" ? req.body.playerName : "Scouted Player"
+    const fee = Number(req.body?.fee ?? 0)
+    const transfer = await client.query(
+      `INSERT INTO transfers (league_id, club_id, player_name, fee, status, payload)
+       VALUES ($1, $2, $3, $4, 'accepted', $5)
+       RETURNING *`,
+      [league.id, club.rows[0]?.id ?? null, playerName, fee, jsonb(req.body ?? {})],
+    )
+    await notifyLeagueMembers(client, league.id, "transfer_completed", {
+      message: `${club.rows[0]?.name ?? "Un club"} ha fichado a ${playerName} por €${fee.toLocaleString("en-US")}`,
+      playerName,
+      fee,
+    })
+    await client.query(
+      `INSERT INTO league_events (league_id, type, payload)
+       VALUES ($1, 'transfer_completed', $2)`,
+      [league.id, jsonb({ playerName, fee, clubName: club.rows[0]?.name })],
+    )
+    await client.query("COMMIT")
+    res.status(201).json({ ok: true, transfer: transfer.rows[0] })
+  } catch (error) {
+    await client.query("ROLLBACK")
+    console.error("[coop] failed to create transfer", { leagueId: league.id, userId, error })
+    res.status(500).json({ error: "Failed to create transfer" })
+  } finally {
+    client.release()
+  }
+})
+
+leagueRouter.post("/leagues/:id/simulate-matchday", async (req: AuthenticatedRequest, res: Response) => {
+  const league = await getLeagueById(routeParam(req.params.id))
+  if (!league) {
+    res.status(404).json({ error: "League not found" })
+    return
+  }
+  if (!req.user?.id) {
+    res.status(401).json({ error: "Authentication required" })
+    return
+  }
+  if (league.status !== "active") {
+    res.status(409).json({ error: "Cannot simulate while the transfer market is open" })
+    return
+  }
+
+  try {
+    const turnStatus = await getTurnStatus(league.id, league.current_matchday)
+    if (!turnStatus.allSubmitted) {
+      res.status(409).json({ error: `Waiting for managers: ${turnStatus.submitted}/${turnStatus.total} confirmed` })
+      return
+    }
+    const result = await advanceLeagueIfReady(league, league.current_matchday)
+    const updatedLeague = await getLeagueById(league.id)
+    res.json({ ok: true, ...result, league: updatedLeague ? mapLeague(updatedLeague) : null, standings: await getStandings(league.id) })
+  } catch (error) {
+    console.error("[coop] manual simulate failed", { leagueId: league.id, error })
+    res.status(500).json({ error: "Failed to simulate matchday" })
+  }
 })
 
 leagueRouter.get("/leagues/:id", async (req: Request, res: Response) => {
@@ -825,6 +1086,11 @@ leagueRouter.post("/leagues/:id/turn", async (req: AuthenticatedRequest, res: Re
 
   if (!req.body?.clubId || !req.body?.lineup || !req.body?.tactics) {
     res.status(400).json({ error: "clubId, lineup and tactics are required" })
+    return
+  }
+
+  if (league.status !== "active") {
+    res.status(409).json({ error: "Matchdays are blocked while the transfer market is open" })
     return
   }
 

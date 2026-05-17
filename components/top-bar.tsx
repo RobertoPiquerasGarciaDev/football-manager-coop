@@ -4,7 +4,15 @@ import { Bell, ChevronDown } from "lucide-react"
 import { formatMoney } from "@/lib/format"
 import { useGame } from "@/lib/game-provider"
 
-export function TopBar({ notificationCount: remoteNotificationCount, onNotificationsClick }: { notificationCount?: number; onNotificationsClick?: () => void }) {
+export function TopBar({
+  notificationCount: remoteNotificationCount,
+  onNotificationsClick,
+  marketStatus,
+}: {
+  notificationCount?: number
+  onNotificationsClick?: () => void
+  marketStatus?: string
+}) {
   const { getUserClub, getLeague, getSeason, getNotificationCount } = useGame()
   const club = getUserClub()
   const league = getLeague()
@@ -31,6 +39,7 @@ export function TopBar({ notificationCount: remoteNotificationCount, onNotificat
               <ChevronDown className="w-3.5 h-3.5 text-muted-foreground group-hover:text-foreground transition-colors" />
             </button>
             <p className="text-[11px] text-muted-foreground font-medium">{league.name}</p>
+            {marketStatus && <p className="text-[10px] font-bold text-[var(--amber)]">{marketStatus}</p>}
           </div>
         </div>
 
