@@ -49,6 +49,10 @@ export function useLeagueSync({ token, leagueId, onMessage }: UseLeagueSyncOptio
       .on("postgres_changes", { event: "*", schema: "public", table: "matches", filter: `league_id=eq.${leagueId}` }, refreshFromRealtime)
       .on("postgres_changes", { event: "*", schema: "public", table: "standings", filter: `league_id=eq.${leagueId}` }, refreshFromRealtime)
       .on("postgres_changes", { event: "*", schema: "public", table: "transfers", filter: `league_id=eq.${leagueId}` }, refreshFromRealtime)
+      .on("postgres_changes", { event: "*", schema: "public", table: "transfer_offers", filter: `league_id=eq.${leagueId}` }, refreshFromRealtime)
+      .on("postgres_changes", { event: "*", schema: "public", table: "club_finances", filter: `league_id=eq.${leagueId}` }, refreshFromRealtime)
+      .on("postgres_changes", { event: "*", schema: "public", table: "financial_events", filter: `league_id=eq.${leagueId}` }, refreshFromRealtime)
+      .on("postgres_changes", { event: "*", schema: "public", table: "chat_messages", filter: `league_id=eq.${leagueId}` }, refreshFromRealtime)
       .on("postgres_changes", { event: "*", schema: "public", table: "league_events", filter: `league_id=eq.${leagueId}` }, refreshFromRealtime)
       .on(
         "postgres_changes",

@@ -109,6 +109,51 @@ type StandingDbRow = {
   points: number
 }
 
+type ClubFinanceRow = {
+  club_id: string
+  league_id: string
+  balance: number
+  transfer_budget: number
+  wage_budget: number
+  weekly_wage_bill: number
+  long_term_debt: number
+  annual_income_projection: number
+  bankrupt: boolean
+  ffp_status: string
+  projection: unknown[]
+  updated_at: Date
+}
+
+type TransferOfferRow = {
+  id: string
+  league_id: string
+  from_club_id: string | null
+  to_club_id: string | null
+  player_name: string
+  operation_type: string
+  market_value: number
+  offer_fee: number
+  wage_offer: number
+  contract_years: string
+  agent_commission_percent: string
+  status: string
+  counter_fee: number | null
+  clauses: Record<string, unknown>
+  expires_at: Date
+  created_at: Date
+  updated_at: Date
+}
+
+type ChatMessageRow = {
+  id: string
+  league_id: string
+  sender_user_id: string | null
+  channel: string
+  body: string
+  payload: Record<string, unknown>
+  created_at: Date
+}
+
 type ClubInput = {
   id?: string
   name?: string
@@ -270,6 +315,57 @@ function mapStandingRow(row: StandingDbRow): StandingRow {
   }
 }
 
+function mapFinance(row: ClubFinanceRow) {
+  return {
+    clubId: row.club_id,
+    leagueId: row.league_id,
+    balance: row.balance,
+    transferBudget: row.transfer_budget,
+    wageBudget: row.wage_budget,
+    weeklyWageBill: row.weekly_wage_bill,
+    longTermDebt: row.long_term_debt,
+    annualIncomeProjection: row.annual_income_projection,
+    bankrupt: row.bankrupt,
+    ffpStatus: row.ffp_status,
+    projection: row.projection,
+    updatedAt: row.updated_at,
+  }
+}
+
+function mapTransferOffer(row: TransferOfferRow) {
+  return {
+    id: row.id,
+    leagueId: row.league_id,
+    fromClubId: row.from_club_id,
+    toClubId: row.to_club_id,
+    playerName: row.player_name,
+    operationType: row.operation_type,
+    marketValue: row.market_value,
+    offerFee: row.offer_fee,
+    wageOffer: row.wage_offer,
+    contractYears: Number(row.contract_years),
+    agentCommissionPercent: Number(row.agent_commission_percent),
+    status: row.status,
+    counterFee: row.counter_fee,
+    clauses: row.clauses,
+    expiresAt: row.expires_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+function mapChatMessage(row: ChatMessageRow) {
+  return {
+    id: row.id,
+    leagueId: row.league_id,
+    senderUserId: row.sender_user_id,
+    channel: row.channel,
+    body: row.body,
+    payload: row.payload,
+    createdAt: row.created_at,
+  }
+}
+
 async function getLeagueById(id: string) {
   const result = await pool.query<LeagueRow>("SELECT * FROM leagues WHERE id = $1", [id])
   return result.rows[0] ?? null
@@ -353,6 +449,119 @@ async function createBotClubs(client: { query: typeof pool.query }, leagueId: st
         jsonb([]),
         jsonb({ formation: "4-4-2", lineup: [], ai: true }),
         jsonb({ balance: 50000000, transferBudget: 25000000, weeklyWageBill: 0, isBot: true }),
+      ],
+    )
+  }
+}
+
+function calculateMarketValue(input: {
+  age: number
+  rating: number
+  potential?: number
+  recentForm?: number
+  contractMonths?: number
+  scarcity?: number
+}) {
+  const ratingBase = Math.pow(Math.max(40, input.rating), 3) * 78
+  const potentialBoost = 1 + Math.max(0, (input.potential ?? input.rating) - input.rating) * 0.015
+  const primeFactor = input.age <= 21 ? 1.08 : input.age <= 25 ? 1.18 : input.age <= 29 ? 1 : Math.max(0.55, 1 - (input.age - 29) * 0.05)
+  const formFactor = 1 + ((input.recentForm ?? 6.8) - 6.8) * 0.04
+  const contractFactor = Math.max(0.65, Math.min(1.15, (input.contractMonths ?? 36) / 36))
+  const scarcityFactor = input.scarcity ?? 1
+  return Math.round((ratingBase * potentialBoost * primeFactor * formFactor * contractFactor * scarcityFactor) / 100000) * 100000
+}
+
+async function ensureClubFinance(client: { query: typeof pool.query }, club: ClubRow) {
+  const existing = await client.query<ClubFinanceRow>("SELECT * FROM club_finances WHERE club_id = $1", [club.id])
+  if (existing.rows[0]) return existing.rows[0]
+
+  const finances = club.finances as {
+    balance?: number
+    transferBudget?: number
+    weeklyWageBill?: number
+    wageBudget?: number
+    longTermDebt?: number
+  }
+  const result = await client.query<ClubFinanceRow>(
+    `INSERT INTO club_finances (
+      club_id, league_id, balance, transfer_budget, wage_budget, weekly_wage_bill,
+      long_term_debt, annual_income_projection, projection
+    )
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    RETURNING *`,
+    [
+      club.id,
+      club.league_id,
+      finances.balance ?? 50_000_000,
+      finances.transferBudget ?? 25_000_000,
+      finances.wageBudget ?? 1_200_000,
+      finances.weeklyWageBill ?? 650_000,
+      finances.longTermDebt ?? 0,
+      52_000_000,
+      jsonb([]),
+    ],
+  )
+  return result.rows[0]
+}
+
+async function applyWeeklyFinance(client: { query: typeof pool.query }, leagueId: string, matchday: number, standings: StandingRow[]) {
+  const clubs = await client.query<ClubRow>("SELECT * FROM clubs WHERE league_id = $1", [leagueId])
+  const byClubId = new Map(standings.map((row, index) => [row.clubId, { ...row, position: index + 1 }]))
+
+  for (const club of clubs.rows) {
+    const finance = await ensureClubFinance(client, club)
+    const standing = byClubId.get(club.id)
+    const positionFactor = standing ? Math.max(0.72, 1.18 - (standing.position - 1) * 0.035) : 0.9
+    const stadiumCapacity = Number((club.finances as { stadiumCapacity?: number }).stadiumCapacity ?? 42_000)
+    const ticketPrice = Number((club.finances as { ticketPrice?: number }).ticketPrice ?? 42)
+    const occupancy = Math.min(0.98, Math.max(0.48, 0.62 * positionFactor))
+    const tickets = Math.round(stadiumCapacity * occupancy * ticketPrice)
+    const tvRights = Math.round(650_000 + (standing ? Math.max(0, 7 - standing.position) * 45_000 : 0))
+    const sponsors = 180_000
+    const prizeMoney = standing && standing.position <= 3 ? 75_000 : 0
+    const playerSales = 0
+    const weeklyIncome = tickets + tvRights + sponsors + prizeMoney + playerSales
+    const staffWages = 130_000
+    const amortization = Math.round(finance.transfer_budget / 260)
+    const facilities = 95_000
+    const performanceBonuses = standing && standing.won > 0 ? 55_000 : 20_000
+    const weeklyExpenses = finance.weekly_wage_bill + staffWages + amortization + facilities + performanceBonuses
+    const interest = finance.long_term_debt > 0 ? Math.round(finance.long_term_debt * 0.0015) : 0
+    const net = weeklyIncome - weeklyExpenses - interest
+    const nextDebt = net < 0 && finance.balance + net < 0 ? finance.long_term_debt + Math.abs(finance.balance + net) : finance.long_term_debt
+    const nextBalance = Math.max(-25_000_000, finance.balance + net)
+    const wageRatio = weeklyIncome > 0 ? finance.weekly_wage_bill / weeklyIncome : 1
+    const ffpStatus = wageRatio > 0.85 ? "transfer_restricted" : wageRatio > 0.7 ? "warning" : nextDebt > finance.annual_income_projection * 3 ? "administration" : "compliant"
+    const bankrupt = nextBalance <= -20_000_000 || ffpStatus === "administration"
+    const projection = Array.from({ length: 12 }, (_, week) => ({
+      week: week + 1,
+      projectedBalance: nextBalance + net * week,
+      projectedDebt: nextDebt,
+    }))
+    const alerts = [
+      ...(wageRatio > 0.7 ? [`Wage bill is ${Math.round(wageRatio * 100)}% of weekly income`] : []),
+      ...(bankrupt ? ["Club is at bankruptcy risk"] : []),
+    ]
+
+    await client.query(
+      `UPDATE club_finances
+       SET balance = $2, long_term_debt = $3, ffp_status = $4, bankrupt = $5,
+           annual_income_projection = $6, projection = $7, updated_at = NOW()
+       WHERE club_id = $1`,
+      [club.id, nextBalance, nextDebt, ffpStatus, bankrupt, weeklyIncome * 52, jsonb(projection)],
+    )
+    await client.query(
+      `INSERT INTO financial_events (club_id, league_id, matchday, income, expenses, net_result, balance_after, alerts)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        club.id,
+        leagueId,
+        matchday,
+        jsonb({ tickets, tvRights, sponsors, prizeMoney, playerSales }),
+        jsonb({ wages: finance.weekly_wage_bill, staffWages, amortization, facilities, performanceBonuses, interest }),
+        net,
+        nextBalance,
+        jsonb(alerts),
       ],
     )
   }
@@ -529,6 +738,7 @@ async function advanceLeagueIfReady(league: LeagueRow, matchday: number) {
     }
 
     const standings = await recalculateStandings(client, league.id)
+    await applyWeeklyFinance(client, league.id, matchday, standings)
     const nextMatchday = matchday + 1
     const nextStatus = nextMatchday === 19 ? "winter_market" : "active"
     const nextPhase = nextMatchday === 19 ? "winter_market" : "season"
@@ -669,6 +879,10 @@ leagueRouter.post("/leagues", async (req: AuthenticatedRequest, res: Response) =
       ])
     }
     await createBotClubs(client, league.id)
+    const allClubs = await client.query<ClubRow>("SELECT * FROM clubs WHERE league_id = $1", [league.id])
+    for (const club of allClubs.rows) {
+      await ensureClubFinance(client, club)
+    }
     await recalculateStandings(client, league.id)
 
     for (const match of matches) {
@@ -751,6 +965,10 @@ leagueRouter.post("/leagues/join", async (req: AuthenticatedRequest, res: Respon
     ])
     await ensureTransferWindow(client, row.id)
     await createBotClubs(client, row.id)
+    const allClubs = await client.query<ClubRow>("SELECT * FROM clubs WHERE league_id = $1", [row.id])
+    for (const item of allClubs.rows) {
+      await ensureClubFinance(client, item)
+    }
     await recalculateStandings(client, row.id)
     await notifyLeagueMembers(client, row.id, "manager_joined", {
       message: `${club.name} joined ${row.name}`,
@@ -1013,6 +1231,178 @@ leagueRouter.post("/leagues/:id/transfers", async (req: AuthenticatedRequest, re
   } finally {
     client.release()
   }
+})
+
+leagueRouter.get("/leagues/:id/finances", async (req: AuthenticatedRequest, res: Response) => {
+  const league = await getLeagueById(routeParam(req.params.id))
+  const userId = req.user?.id
+  if (!league || !userId) {
+    res.status(league ? 401 : 404).json({ error: league ? "Authentication required" : "League not found" })
+    return
+  }
+
+  const club = await pool.query<ClubRow>("SELECT * FROM clubs WHERE league_id = $1 AND manager_user_id = $2", [
+    league.id,
+    userId,
+  ])
+  if (!club.rows[0]) {
+    res.status(404).json({ error: "Managed club not found" })
+    return
+  }
+  await ensureClubFinance(pool, club.rows[0])
+  const [finance, events] = await Promise.all([
+    pool.query<ClubFinanceRow>("SELECT * FROM club_finances WHERE club_id = $1", [club.rows[0].id]),
+    pool.query(
+      "SELECT * FROM financial_events WHERE club_id = $1 ORDER BY created_at DESC LIMIT 52",
+      [club.rows[0].id],
+    ),
+  ])
+  res.json({ finance: mapFinance(finance.rows[0]), events: events.rows })
+})
+
+leagueRouter.get("/leagues/:id/market/valuation", async (req: AuthenticatedRequest, res: Response) => {
+  const age = Number(req.query.age ?? 25)
+  const rating = Number(req.query.rating ?? 85)
+  const potential = Number(req.query.potential ?? rating)
+  const recentForm = Number(req.query.recentForm ?? 6.8)
+  const contractMonths = Number(req.query.contractMonths ?? 36)
+  const scarcity = Number(req.query.scarcity ?? 1)
+  res.json({ value: calculateMarketValue({ age, rating, potential, recentForm, contractMonths, scarcity }) })
+})
+
+leagueRouter.post("/leagues/:id/transfer-offers", async (req: AuthenticatedRequest, res: Response) => {
+  const league = await getLeagueById(routeParam(req.params.id))
+  const userId = req.user?.id
+  if (!league || !userId) {
+    res.status(league ? 401 : 404).json({ error: league ? "Authentication required" : "League not found" })
+    return
+  }
+  if (league.status !== "summer_market" && league.status !== "winter_market") {
+    res.status(409).json({ error: "Transfers are only available during open transfer windows" })
+    return
+  }
+
+  const fromClub = await pool.query<ClubRow>("SELECT * FROM clubs WHERE league_id = $1 AND manager_user_id = $2", [
+    league.id,
+    userId,
+  ])
+  if (!fromClub.rows[0]) {
+    res.status(404).json({ error: "Managed club not found" })
+    return
+  }
+  const playerName = typeof req.body?.playerName === "string" ? req.body.playerName : "Unknown Player"
+  const marketValue =
+    Number(req.body?.marketValue) ||
+    calculateMarketValue({
+      age: Number(req.body?.age ?? 25),
+      rating: Number(req.body?.rating ?? 85),
+      potential: Number(req.body?.potential ?? req.body?.rating ?? 85),
+      contractMonths: Number(req.body?.contractMonths ?? 36),
+    })
+  const offerFee = Number(req.body?.offerFee ?? req.body?.fee ?? 0)
+  const ratio = marketValue > 0 ? offerFee / marketValue : 0
+  const status = ratio < 0.7 ? "rejected" : ratio < 0.9 ? "countered" : "accepted"
+  const counterFee = status === "countered" ? Math.round(marketValue * 0.95) : null
+  const client = await pool.connect()
+  try {
+    await client.query("BEGIN")
+    const result = await client.query<TransferOfferRow>(
+      `INSERT INTO transfer_offers (
+        league_id, from_club_id, to_club_id, player_name, operation_type, market_value,
+        offer_fee, wage_offer, contract_years, agent_commission_percent, status, counter_fee, clauses
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      RETURNING *`,
+      [
+        league.id,
+        fromClub.rows[0].id,
+        req.body?.toClubId ?? null,
+        playerName,
+        req.body?.operationType ?? "direct_buy",
+        marketValue,
+        offerFee,
+        Number(req.body?.wageOffer ?? 80_000),
+        Number(req.body?.contractYears ?? 4),
+        Number(req.body?.agentCommissionPercent ?? 5),
+        status,
+        counterFee,
+        jsonb({
+          loanDurationMonths: req.body?.loanDurationMonths,
+          salarySharePercent: req.body?.salarySharePercent,
+          buyOptionFee: req.body?.buyOptionFee,
+          goalBonus: req.body?.goalBonus,
+          appearanceBonus: req.body?.appearanceBonus,
+          sellOnPercent: req.body?.sellOnPercent,
+          releaseClause: req.body?.releaseClause,
+          signingBonus: req.body?.signingBonus,
+        }),
+      ],
+    )
+    await notifyLeagueMembers(client, league.id, "transfer_offer", {
+      message:
+        status === "accepted"
+          ? `${fromClub.rows[0].name} has agreed terms for ${playerName}`
+          : status === "countered"
+            ? `${playerName} offer countered at €${counterFee?.toLocaleString("en-US")}`
+            : `${playerName} offer rejected below 70% valuation`,
+      playerName,
+      status,
+    })
+    await client.query("COMMIT")
+    res.status(201).json(mapTransferOffer(result.rows[0]))
+  } catch (error) {
+    await client.query("ROLLBACK")
+    console.error("[market] failed to create offer", { leagueId: league.id, error })
+    res.status(500).json({ error: "Failed to create transfer offer" })
+  } finally {
+    client.release()
+  }
+})
+
+leagueRouter.post("/transfer-offers/:id/respond", async (req: AuthenticatedRequest, res: Response) => {
+  const status = req.body?.status === "accepted" || req.body?.status === "rejected" || req.body?.status === "countered" ? req.body.status : ""
+  if (!status) {
+    res.status(400).json({ error: "status must be accepted, rejected or countered" })
+    return
+  }
+  const offer = await pool.query<TransferOfferRow>("SELECT * FROM transfer_offers WHERE id = $1", [routeParam(req.params.id)])
+  if (!offer.rows[0]) {
+    res.status(404).json({ error: "Transfer offer not found" })
+    return
+  }
+  const result = await pool.query<TransferOfferRow>(
+    `UPDATE transfer_offers
+     SET status = $2, counter_fee = COALESCE($3, counter_fee), updated_at = NOW()
+     WHERE id = $1
+     RETURNING *`,
+    [offer.rows[0].id, status, req.body?.counterFee ?? null],
+  )
+  res.json(mapTransferOffer(result.rows[0]))
+})
+
+leagueRouter.get("/leagues/:id/chat", async (req: AuthenticatedRequest, res: Response) => {
+  const result = await pool.query<ChatMessageRow>(
+    "SELECT * FROM chat_messages WHERE league_id = $1 ORDER BY created_at DESC LIMIT 100",
+    [routeParam(req.params.id)],
+  )
+  res.json(result.rows.reverse().map(mapChatMessage))
+})
+
+leagueRouter.post("/leagues/:id/chat", async (req: AuthenticatedRequest, res: Response) => {
+  const league = await getLeagueById(routeParam(req.params.id))
+  const userId = req.user?.id
+  const body = typeof req.body?.body === "string" ? req.body.body.trim() : ""
+  if (!league || !userId || !body) {
+    res.status(!league ? 404 : !userId ? 401 : 400).json({ error: !league ? "League not found" : !userId ? "Authentication required" : "body is required" })
+    return
+  }
+  const result = await pool.query<ChatMessageRow>(
+    `INSERT INTO chat_messages (league_id, sender_user_id, channel, body, payload)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING *`,
+    [league.id, userId, req.body?.channel ?? "general", body, jsonb(req.body?.payload ?? {})],
+  )
+  res.status(201).json(mapChatMessage(result.rows[0]))
 })
 
 leagueRouter.post("/leagues/:id/simulate-matchday", async (req: AuthenticatedRequest, res: Response) => {

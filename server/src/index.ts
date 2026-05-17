@@ -14,7 +14,7 @@ const port = Number(process.env.PORT ?? 3001)
 const requestBuckets = new Map<string, { count: number; resetAt: number }>()
 
 function rateLimit(req: Request, res: Response, next: NextFunction) {
-  const key = req.ip ?? "anonymous"
+  const key = req.header("authorization") ?? req.ip ?? "anonymous"
   const now = Date.now()
   const bucket = requestBuckets.get(key)
   if (!bucket || bucket.resetAt < now) {
@@ -23,7 +23,7 @@ function rateLimit(req: Request, res: Response, next: NextFunction) {
     return
   }
 
-  if (bucket.count >= 120) {
+  if (bucket.count >= 100) {
     res.status(429).json({ error: "Too many requests" })
     return
   }

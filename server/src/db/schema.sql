@@ -116,6 +116,64 @@ CREATE TABLE IF NOT EXISTS transfers (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS transfer_offers (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  league_id UUID NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
+  from_club_id UUID REFERENCES clubs(id) ON DELETE SET NULL,
+  to_club_id UUID REFERENCES clubs(id) ON DELETE SET NULL,
+  player_name TEXT NOT NULL,
+  operation_type TEXT NOT NULL DEFAULT 'direct_buy',
+  market_value INTEGER NOT NULL DEFAULT 0,
+  offer_fee INTEGER NOT NULL DEFAULT 0,
+  wage_offer INTEGER NOT NULL DEFAULT 0,
+  contract_years NUMERIC NOT NULL DEFAULT 4,
+  agent_commission_percent NUMERIC NOT NULL DEFAULT 5,
+  status TEXT NOT NULL DEFAULT 'pending',
+  counter_fee INTEGER,
+  clauses JSONB NOT NULL DEFAULT '{}'::jsonb,
+  expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '72 hours',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS club_finances (
+  club_id UUID PRIMARY KEY REFERENCES clubs(id) ON DELETE CASCADE,
+  league_id UUID NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
+  balance INTEGER NOT NULL DEFAULT 50000000,
+  transfer_budget INTEGER NOT NULL DEFAULT 25000000,
+  wage_budget INTEGER NOT NULL DEFAULT 1200000,
+  weekly_wage_bill INTEGER NOT NULL DEFAULT 650000,
+  long_term_debt INTEGER NOT NULL DEFAULT 0,
+  annual_income_projection INTEGER NOT NULL DEFAULT 52000000,
+  bankrupt BOOLEAN NOT NULL DEFAULT FALSE,
+  ffp_status TEXT NOT NULL DEFAULT 'compliant',
+  projection JSONB NOT NULL DEFAULT '[]'::jsonb,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS financial_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  club_id UUID NOT NULL REFERENCES clubs(id) ON DELETE CASCADE,
+  league_id UUID NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
+  matchday INTEGER NOT NULL DEFAULT 1,
+  income JSONB NOT NULL DEFAULT '{}'::jsonb,
+  expenses JSONB NOT NULL DEFAULT '{}'::jsonb,
+  net_result INTEGER NOT NULL DEFAULT 0,
+  balance_after INTEGER NOT NULL DEFAULT 0,
+  alerts JSONB NOT NULL DEFAULT '[]'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  league_id UUID NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
+  sender_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+  channel TEXT NOT NULL DEFAULT 'general',
+  body TEXT NOT NULL,
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS turns (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   league_id UUID NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
@@ -165,6 +223,12 @@ ALTER TABLE notifications ADD COLUMN IF NOT EXISTS league_id UUID REFERENCES lea
 CREATE INDEX IF NOT EXISTS notifications_user_created_idx ON notifications (user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS standings_league_points_idx ON standings (league_id, points DESC, goal_difference DESC);
 CREATE INDEX IF NOT EXISTS transfers_league_created_idx ON transfers (league_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS transfer_offers_league_created_idx ON transfer_offers (league_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS club_finances_league_idx ON club_finances (league_id);
+CREATE INDEX IF NOT EXISTS financial_events_club_created_idx ON financial_events (club_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS chat_messages_league_created_idx ON chat_messages (league_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS league_members_club_id_idx ON league_members (club_id);
+CREATE INDEX IF NOT EXISTS notifications_league_id_idx ON notifications (league_id);
 
 DO $$
 BEGIN
@@ -185,7 +249,7 @@ DECLARE
   table_name TEXT;
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
-    FOREACH table_name IN ARRAY ARRAY['leagues', 'clubs', 'matches', 'standings', 'transfers', 'league_transfer_windows', 'transfer_window'] LOOP
+    FOREACH table_name IN ARRAY ARRAY['leagues', 'clubs', 'matches', 'standings', 'transfers', 'transfer_offers', 'club_finances', 'financial_events', 'chat_messages', 'league_transfer_windows', 'transfer_window'] LOOP
       IF NOT EXISTS (
         SELECT 1
         FROM pg_publication_tables

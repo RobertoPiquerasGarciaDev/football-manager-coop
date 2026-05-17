@@ -47,6 +47,9 @@ export function useLeagueRealtime({ leagueId, onTurnChange }: UseLeagueRealtimeO
         { event: "*", schema: "public", table: "transfers", filter: `league_id=eq.${leagueId}` },
         onTurnChange,
       )
+      .on("postgres_changes", { event: "*", schema: "public", table: "transfer_offers", filter: `league_id=eq.${leagueId}` }, onTurnChange)
+      .on("postgres_changes", { event: "*", schema: "public", table: "chat_messages", filter: `league_id=eq.${leagueId}` }, onTurnChange)
+      .on("postgres_changes", { event: "*", schema: "public", table: "club_finances", filter: `league_id=eq.${leagueId}` }, onTurnChange)
       .subscribe()
 
     return () => {

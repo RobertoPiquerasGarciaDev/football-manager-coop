@@ -78,6 +78,21 @@ export type NotificationItem = {
   createdAt: string
 }
 
+export type ClubFinance = {
+  clubId: string
+  leagueId: string
+  balance: number
+  transferBudget: number
+  wageBudget: number
+  weeklyWageBill: number
+  longTermDebt: number
+  annualIncomeProjection: number
+  bankrupt: boolean
+  ffpStatus: string
+  projection: Array<{ week: number; projectedBalance: number; projectedDebt: number }>
+  updatedAt: string
+}
+
 export type StandingRow = {
   clubId: string
   clubName: string
@@ -227,5 +242,34 @@ export function createTransfer(token: string, leagueId: string, playerName: stri
     method: "POST",
     token,
     body: JSON.stringify({ playerName, fee }),
+  })
+}
+
+export function fetchFinances(token: string, leagueId: string): Promise<{ finance: ClubFinance; events: unknown[] }> {
+  return apiFetch<{ finance: ClubFinance; events: unknown[] }>(`/leagues/${leagueId}/finances`, { token })
+}
+
+export function valuePlayer(token: string, leagueId: string, params: { age: number; rating: number; potential?: number }) {
+  const query = new URLSearchParams(Object.entries(params).map(([key, value]) => [key, String(value)]))
+  return apiFetch<{ value: number }>(`/leagues/${leagueId}/market/valuation?${query.toString()}`, { token })
+}
+
+export function createTransferOffer(
+  token: string,
+  leagueId: string,
+  payload: { playerName: string; offerFee: number; rating?: number; age?: number; operationType?: string },
+) {
+  return apiFetch<unknown>(`/leagues/${leagueId}/transfer-offers`, {
+    method: "POST",
+    token,
+    body: JSON.stringify(payload),
+  })
+}
+
+export function sendChatMessage(token: string, leagueId: string, body: string, channel = "general") {
+  return apiFetch<unknown>(`/leagues/${leagueId}/chat`, {
+    method: "POST",
+    token,
+    body: JSON.stringify({ body, channel }),
   })
 }
