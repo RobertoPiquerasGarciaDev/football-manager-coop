@@ -5,11 +5,13 @@ CREATE TABLE IF NOT EXISTS users (
   email TEXT NOT NULL UNIQUE,
   display_name TEXT NOT NULL,
   password_hash TEXT,
+  club_id TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS club_id TEXT;
 
 CREATE TABLE IF NOT EXISTS leagues (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -85,6 +87,16 @@ CREATE INDEX IF NOT EXISTS clubs_league_manager_idx ON clubs (league_id, manager
 CREATE INDEX IF NOT EXISTS matches_league_matchday_idx ON matches (league_id, matchday, status);
 CREATE INDEX IF NOT EXISTS turns_league_matchday_idx ON turns (league_id, matchday);
 
+CREATE TABLE IF NOT EXISTS league_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  league_id UUID NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
+  type TEXT NOT NULL,
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS league_events_league_created_idx ON league_events (league_id, created_at DESC);
+
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime')
@@ -96,5 +108,19 @@ BEGIN
         AND tablename = 'turns'
     ) THEN
     ALTER PUBLICATION supabase_realtime ADD TABLE turns;
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime')
+    AND NOT EXISTS (
+      SELECT 1
+      FROM pg_publication_tables
+      WHERE pubname = 'supabase_realtime'
+        AND schemaname = 'public'
+        AND tablename = 'league_events'
+    ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE league_events;
   END IF;
 END $$;

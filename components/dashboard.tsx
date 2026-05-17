@@ -166,7 +166,7 @@ export default function Dashboard() {
   }
 
   async function handleSubmitTurn() {
-    const clubId = remoteLeague?.clubs?.[0]?.id
+    const clubId = remoteLeague?.clubs?.find((club) => club.managerUserId === user?.id)?.id
     if (!token || !remoteLeague?.id || !clubId) return
 
     setIsTurnSubmitting(true)
@@ -182,14 +182,21 @@ export default function Dashboard() {
       })
       setRemoteLeague((league) => (league ? { ...league, turnStatus: response.turnStatus } : league))
       setLeagueSyncMessage(
-        response.turnStatus.allSubmitted
+        response.advanced
+          ? "Todos los managers enviaron turno. Jornada simulada y resultados actualizados."
+          : response.turnStatus.allSubmitted
           ? "Todos los managers han enviado su turno. Dashboard actualizado."
           : `Turno enviado: ${response.turnStatus.submitted}/${response.turnStatus.total}`,
       )
       toast({
-        title: "Turn submitted",
-        description: response.turnStatus.allSubmitted ? "All managers are ready to simulate." : `${response.turnStatus.submitted}/${response.turnStatus.total} ready`,
+        title: response.advanced ? "Matchday advanced" : "Turn submitted",
+        description: response.advanced
+          ? "Realtime results are now available for every manager."
+          : response.turnStatus.allSubmitted ? "All managers are ready to simulate." : `${response.turnStatus.submitted}/${response.turnStatus.total} ready`,
       })
+      if (response.advanced) {
+        await refreshRemoteLeague()
+      }
     } catch (error) {
       setLeagueSyncError(error instanceof Error ? error.message : "No se pudo enviar el turno")
     } finally {
@@ -274,7 +281,7 @@ export default function Dashboard() {
                 type="button"
                 variant="outline"
                 onClick={handleSubmitTurn}
-                disabled={isTurnSubmitting || !remoteLeague.clubs?.[0]?.id}
+                disabled={isTurnSubmitting || !remoteLeague.clubs?.some((club) => club.managerUserId === user?.id)}
               >
                 {isTurnSubmitting ? "Enviando turno..." : "Enviar Turno"}
               </Button>

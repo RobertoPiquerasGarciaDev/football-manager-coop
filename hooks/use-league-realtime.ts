@@ -16,13 +16,23 @@ export function useLeagueRealtime({ leagueId, onTurnChange }: UseLeagueRealtimeO
     if (!supabase) return
 
     const channel = supabase
-      .channel(`league-turns:${leagueId}`)
+      .channel(`league-realtime:${leagueId}`)
       .on(
         "postgres_changes",
         {
           event: "*",
           schema: "public",
           table: "turns",
+          filter: `league_id=eq.${leagueId}`,
+        },
+        onTurnChange,
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "league_events",
           filter: `league_id=eq.${leagueId}`,
         },
         onTurnChange,

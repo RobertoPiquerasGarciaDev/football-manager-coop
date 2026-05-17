@@ -8,6 +8,7 @@ export type AuthUser = {
   id: string
   email: string
   displayName: string
+  clubId: string | null
 }
 
 export type AuthResponse = {
@@ -98,10 +99,10 @@ async function apiFetch<T>(path: string, { token, headers, ...options }: ApiOpti
   return payload as T
 }
 
-export function register(email: string, password: string, displayName: string): Promise<AuthResponse> {
+export function register(email: string, password: string, displayName: string, clubId: string): Promise<AuthResponse> {
   return apiFetch<AuthResponse>("/auth/register", {
     method: "POST",
-    body: JSON.stringify({ email, password, displayName }),
+    body: JSON.stringify({ email, password, displayName, clubId }),
   })
 }
 
@@ -139,7 +140,7 @@ export function fetchLeague(token: string, leagueId: string): Promise<LeagueResp
 }
 
 export function submitTurn(token: string, leagueId: string, payload: TurnPayload) {
-  return apiFetch<{ ok: boolean; turn: unknown; turnStatus: TurnStatus }>(`/leagues/${leagueId}/turn`, {
+  return apiFetch<{ ok: boolean; turn: unknown; turnStatus: TurnStatus; advanced: boolean }>(`/leagues/${leagueId}/turn`, {
     method: "POST",
     token,
     body: JSON.stringify(payload),

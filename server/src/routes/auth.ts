@@ -11,6 +11,7 @@ type UserRow = {
   email: string
   display_name: string
   password_hash: string
+  club_id: string | null
   created_at: Date
   updated_at: Date
 }
@@ -33,9 +34,15 @@ function mapUser(row: UserRow) {
     id: row.id,
     email: row.email,
     displayName: row.display_name,
+    clubId: row.club_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
+}
+
+function normalizeClubId(clubId: unknown): string {
+  const value = typeof clubId === "string" ? clubId.trim().toLowerCase() : ""
+  return value || "metropolis"
 }
 
 async function hashPassword(password: string): Promise<string> {
@@ -59,6 +66,7 @@ authRouter.post("/auth/register", async (req: Request, res: Response) => {
   const email = normalizeEmail(req.body?.email)
   const password = typeof req.body?.password === "string" ? req.body.password : ""
   const displayName = normalizeDisplayName(req.body?.displayName ?? req.body?.display_name, email)
+  const clubId = normalizeClubId(req.body?.clubId ?? req.body?.club_id)
 
   if (!email || !email.includes("@") || password.length < 8) {
     res.status(400).json({ error: "Valid email and password with at least 8 characters are required" })
@@ -68,10 +76,10 @@ authRouter.post("/auth/register", async (req: Request, res: Response) => {
   try {
     const passwordHash = await hashPassword(password)
     const result = await pool.query<UserRow>(
-      `INSERT INTO users (email, display_name, password_hash)
-       VALUES ($1, $2, $3)
+      `INSERT INTO users (email, display_name, password_hash, club_id)
+       VALUES ($1, $2, $3, $4)
        RETURNING *`,
-      [email, displayName, passwordHash],
+      [email, displayName, passwordHash, clubId],
     )
     const user = mapUser(result.rows[0])
     const token = signAuthToken({ id: user.id, email: user.email })

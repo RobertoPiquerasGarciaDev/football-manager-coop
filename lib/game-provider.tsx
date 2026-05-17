@@ -12,9 +12,11 @@ import {
   type YouthProspect,
 } from "@/lib/types"
 import { advanceTurn as advanceGameTurn } from "@/lib/engine/season-manager"
+import { useAuth } from "@/hooks/use-auth"
 import { loadGame, saveGame } from "@/lib/persistence"
 import {
   FORMATION_PRESETS,
+  IDS,
   gameSave,
   getClub,
   getContractForPlayer,
@@ -109,7 +111,15 @@ export type GameContextValue = {
 
 const GameContext = createContext<GameContextValue | null>(null)
 
+const userClubMap: Record<string, string> = {
+  metropolis: IDS.clubs.metropolis,
+  harbor: IDS.clubs.harbor,
+  dynamo: IDS.clubs.capital,
+  rovers: IDS.clubs.pacific,
+}
+
 export function GameProvider({ children }: { children: ReactNode }) {
+  const { user } = useAuth()
   const [save, setSave] = useState<GameSave>(gameSave)
   setActiveGameSave(save)
 
@@ -117,6 +127,21 @@ export function GameProvider({ children }: { children: ReactNode }) {
     const persistedSave = loadGame()
     if (persistedSave) setSave(ensureFullSeasonCalendar(persistedSave))
   }, [])
+
+  useEffect(() => {
+    const nextClubId = user?.clubId ? userClubMap[user.clubId] : null
+    if (!nextClubId) return
+    setSave((current) => {
+      if (current.userClubId === nextClubId) return current
+      const nextSave = {
+        ...current,
+        userClubId: nextClubId,
+        standings: current.standings.map((standing) => ({ ...standing, isUserClub: standing.clubId === nextClubId })),
+      }
+      saveGame(nextSave)
+      return nextSave
+    })
+  }, [user?.clubId])
 
   const advanceTurn = useCallback(() => {
     const nextSave = advanceGameTurn(save)

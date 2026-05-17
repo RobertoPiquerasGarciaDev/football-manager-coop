@@ -72,6 +72,11 @@ type TurnStatus = {
   allSubmitted: boolean
 }
 
+type UserRow = {
+  id: string
+  club_id: string | null
+}
+
 type ClubInput = {
   id?: string
   name?: string
@@ -102,12 +107,25 @@ type MatchInput = {
 
 export const leagueRouter = Router()
 
+const clubProfiles: Record<string, { name: string; shortName: string }> = {
+  metropolis: { name: "FC Metropolis", shortName: "MET" },
+  harbor: { name: "Harbor City", shortName: "HBC" },
+  dynamo: { name: "Capital Dynamo", shortName: "DYN" },
+  rovers: { name: "Pacific Rovers", shortName: "PFR" },
+}
+
 function jsonb(value: unknown): string {
   return JSON.stringify(value)
 }
 
 function generateInviteCode(): string {
   return Math.random().toString(36).slice(2, 8).toUpperCase()
+}
+
+async function getUserClubProfile(userId: string) {
+  const result = await pool.query<UserRow>("SELECT id, club_id FROM users WHERE id = $1", [userId])
+  const key = result.rows[0]?.club_id ?? "metropolis"
+  return clubProfiles[key] ?? clubProfiles.metropolis
 }
 
 function routeParam(value: string | string[] | undefined): string {
@@ -178,6 +196,36 @@ async function getLeagueById(id: string) {
   return result.rows[0] ?? null
 }
 
+async function createManagedClub(
+  client: { query: typeof pool.query },
+  leagueId: string,
+  userId: string,
+  fallbackName = "Manager FC",
+) {
+  const profile = await getUserClubProfile(userId)
+  const existing = await client.query<ClubRow>("SELECT * FROM clubs WHERE league_id = $1 AND manager_user_id = $2", [
+    leagueId,
+    userId,
+  ])
+  if (existing.rows[0]) return existing.rows[0]
+
+  const result = await client.query<ClubRow>(
+    `INSERT INTO clubs (league_id, manager_user_id, name, short_name, squad, tactics, finances)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     RETURNING *`,
+    [
+      leagueId,
+      userId,
+      profile.name ?? fallbackName,
+      profile.shortName ?? "MFC",
+      jsonb([]),
+      jsonb({ formation: "4-3-3", lineup: [] }),
+      jsonb({ balance: 50000000, transferBudget: 25000000, weeklyWageBill: 0 }),
+    ],
+  )
+  return result.rows[0]
+}
+
 async function getTurnStatus(leagueId: string, matchday: number): Promise<TurnStatus> {
   const result = await pool.query<{ total: string; submitted: string }>(
     `SELECT
@@ -195,6 +243,100 @@ async function getTurnStatus(leagueId: string, matchday: number): Promise<TurnSt
     submitted,
     total,
     allSubmitted: total > 0 && submitted >= total,
+  }
+}
+
+function scoreFor(seed: string): number {
+  return Array.from(seed).reduce((sum, char) => sum + char.charCodeAt(0), 0) % 4
+}
+
+async function ensureMatchdayMatches(client: { query: typeof pool.query }, leagueId: string, matchday: number) {
+  const existing = await client.query<MatchRow>("SELECT * FROM matches WHERE league_id = $1 AND matchday = $2", [
+    leagueId,
+    matchday,
+  ])
+  if (existing.rows.length > 0) return existing.rows
+
+  const clubs = await client.query<ClubRow>("SELECT * FROM clubs WHERE league_id = $1 ORDER BY created_at ASC", [leagueId])
+  const created: MatchRow[] = []
+  for (let index = 0; index < clubs.rows.length - 1; index += 2) {
+    const home = clubs.rows[index]
+    const away = clubs.rows[index + 1]
+    const result = await client.query<MatchRow>(
+      `INSERT INTO matches (league_id, matchday, home_club_id, away_club_id, status, events)
+       VALUES ($1, $2, $3, $4, 'scheduled', $5)
+       ON CONFLICT (league_id, matchday, home_club_id, away_club_id) DO NOTHING
+       RETURNING *`,
+      [leagueId, matchday, home.id, away.id, jsonb([])],
+    )
+    if (result.rows[0]) created.push(result.rows[0])
+  }
+  return created
+}
+
+async function advanceLeagueIfReady(league: LeagueRow, matchday: number) {
+  const status = await getTurnStatus(league.id, matchday)
+  if (!status.allSubmitted) return { advanced: false, turnStatus: status }
+
+  const client = await pool.connect()
+  try {
+    await client.query("BEGIN")
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`advance:${league.id}:${matchday}`])
+    const lockedLeague = await client.query<LeagueRow>(
+      "UPDATE leagues SET current_matchday = current_matchday + 1, updated_at = NOW() WHERE id = $1 AND current_matchday = $2 RETURNING *",
+      [league.id, matchday],
+    )
+    if (!lockedLeague.rows[0]) {
+      await client.query("ROLLBACK")
+      return { advanced: false, turnStatus: status }
+    }
+
+    const matches = await ensureMatchdayMatches(client, league.id, matchday)
+    const finishedMatches: MatchRow[] = []
+    for (const match of matches) {
+      const homeScore = scoreFor(`${match.home_club_id}:${matchday}:home`)
+      const awayScore = scoreFor(`${match.away_club_id}:${matchday}:away`)
+      const result = await client.query<MatchRow>(
+        `UPDATE matches
+         SET status = 'finished', home_score = $1, away_score = $2, played_at = NOW(),
+             events = $3
+         WHERE id = $4
+         RETURNING *`,
+        [
+          homeScore,
+          awayScore,
+          jsonb([
+            { minute: 12, type: "key_chance", description: "Opening pressure from the home side" },
+            ...(homeScore + awayScore > 0 ? [{ minute: 54, type: "goal", description: "Decisive cooperative turn goal" }] : []),
+          ]),
+          match.id,
+        ],
+      )
+      finishedMatches.push(result.rows[0])
+    }
+
+    await client.query(
+      `INSERT INTO league_events (league_id, type, payload)
+       VALUES ($1, 'matchday_advanced', $2)`,
+      [
+        league.id,
+        jsonb({
+          matchday,
+          nextMatchday: matchday + 1,
+          turnStatus: status,
+          matches: finishedMatches.map(mapMatch),
+        }),
+      ],
+    )
+    await client.query("COMMIT")
+    console.log("[coop] matchday advanced", { leagueId: league.id, matchday, nextMatchday: matchday + 1 })
+    return { advanced: true, turnStatus: status }
+  } catch (error) {
+    await client.query("ROLLBACK")
+    console.error("[coop] failed to advance matchday", { leagueId: league.id, matchday, error })
+    throw error
+  } finally {
+    client.release()
   }
 }
 
@@ -294,14 +436,15 @@ leagueRouter.post("/leagues", async (req: AuthenticatedRequest, res: Response) =
     const clubs = Array.isArray(req.body?.clubs) ? (req.body.clubs as ClubInput[]) : []
     const matches = Array.isArray(req.body?.matches) ? (req.body.matches as MatchInput[]) : []
     const insertedClubs: ClubRow[] = []
+    const userClubProfile = await getUserClubProfile(userId)
 
     const clubsToCreate: ClubInput[] =
       clubs.length > 0
         ? clubs
         : [
             {
-              name: req.body?.clubName ?? "Manager FC",
-              shortName: req.body?.clubShortName ?? "MFC",
+              name: req.body?.clubName ?? userClubProfile.name,
+              shortName: req.body?.clubShortName ?? userClubProfile.shortName,
               squad: [],
               tactics: {},
               finances: {},
@@ -392,8 +535,22 @@ leagueRouter.post("/leagues/join", async (req: AuthenticatedRequest, res: Respon
      ON CONFLICT (league_id, user_id) DO NOTHING`,
     [row.id, userId, "manager"],
   )
+  const client = await pool.connect()
+  try {
+    await client.query("BEGIN")
+    await createManagedClub(client, row.id, userId)
+    await client.query("COMMIT")
+  } catch (error) {
+    await client.query("ROLLBACK")
+    console.error("[coop] failed to create joined manager club", { leagueId: row.id, userId, error })
+    res.status(500).json({ error: "Failed to assign club to user" })
+    return
+  } finally {
+    client.release()
+  }
 
-  res.json(mapLeague(row))
+  const clubs = await pool.query<ClubRow>("SELECT * FROM clubs WHERE league_id = $1 ORDER BY created_at ASC", [row.id])
+  res.json({ ...mapLeague(row), clubs: clubs.rows.map(mapClub) })
 })
 
 leagueRouter.get("/leagues/:id", async (req: Request, res: Response) => {
@@ -440,6 +597,16 @@ leagueRouter.post("/leagues/:id/turn", async (req: AuthenticatedRequest, res: Re
 
   try {
     const matchday = req.body.matchday ?? league.current_matchday
+    const club = await pool.query<ClubRow>(
+      "SELECT * FROM clubs WHERE id = $1 AND league_id = $2 AND manager_user_id = $3",
+      [req.body.clubId, league.id, req.user.id],
+    )
+    if (!club.rows[0]) {
+      res.status(403).json({ error: "You can only submit turns for your assigned club" })
+      return
+    }
+
+    console.log("[coop] submitting turn", { leagueId: league.id, matchday, userId: req.user.id, clubId: req.body.clubId })
     const turnResult = await pool.query<TurnRow>(
       `INSERT INTO turns (league_id, club_id, user_id, matchday, lineup, tactics)
        VALUES ($1, $2, $3, $4, $5, $6)
@@ -448,9 +615,10 @@ leagueRouter.post("/leagues/:id/turn", async (req: AuthenticatedRequest, res: Re
        RETURNING *`,
       [league.id, req.body.clubId, req.user.id, matchday, jsonb(req.body.lineup), jsonb(req.body.tactics)],
     )
-    const turnStatus = await getTurnStatus(league.id, matchday)
+    const { advanced, turnStatus } = await advanceLeagueIfReady(league, matchday)
+    console.log("[coop] turn submitted", { leagueId: league.id, matchday, advanced, turnStatus })
 
-    res.status(201).json({ ok: true, turn: mapTurn(turnResult.rows[0]), turnStatus })
+    res.status(201).json({ ok: true, turn: mapTurn(turnResult.rows[0]), turnStatus, advanced })
   } catch (error) {
     console.error("Failed to submit turn", error)
     res.status(500).json({ error: "Failed to submit turn" })

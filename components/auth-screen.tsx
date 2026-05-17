@@ -36,7 +36,7 @@ export function AuthScreen() {
 
     try {
       if (mode === "register") {
-        await register(email, password, displayName)
+        await register(email, password, displayName, selectedClub)
       } else {
         await login(email, password)
       }
