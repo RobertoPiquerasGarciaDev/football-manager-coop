@@ -17,6 +17,7 @@ type LeagueRow = {
 type ClubRow = {
   id: string
   league_id: string
+  manager_user_id: string | null
   name: string
   short_name: string
   squad: unknown[]
@@ -45,6 +46,7 @@ type TurnRow = {
   id: string
   league_id: string
   club_id: string
+  user_id: string | null
   matchday: number
   lineup: unknown
   tactics: unknown
@@ -62,6 +64,12 @@ type StandingRow = {
   goalsAgainst: number
   goalDifference: number
   points: number
+}
+
+type TurnStatus = {
+  submitted: number
+  total: number
+  allSubmitted: boolean
 }
 
 type ClubInput = {
@@ -120,6 +128,7 @@ function mapClub(row: ClubRow) {
   return {
     id: row.id,
     leagueId: row.league_id,
+    managerUserId: row.manager_user_id,
     name: row.name,
     shortName: row.short_name,
     squad: row.squad,
@@ -152,6 +161,7 @@ function mapTurn(row: TurnRow) {
     id: row.id,
     leagueId: row.league_id,
     clubId: row.club_id,
+    userId: row.user_id,
     matchday: row.matchday,
     lineup: row.lineup,
     tactics: row.tactics,
@@ -162,6 +172,26 @@ function mapTurn(row: TurnRow) {
 async function getLeagueById(id: string) {
   const result = await pool.query<LeagueRow>("SELECT * FROM leagues WHERE id = $1", [id])
   return result.rows[0] ?? null
+}
+
+async function getTurnStatus(leagueId: string, matchday: number): Promise<TurnStatus> {
+  const result = await pool.query<{ total: string; submitted: string }>(
+    `SELECT
+       (SELECT COUNT(*) FROM league_members WHERE league_id = $1) AS total,
+       (SELECT COUNT(DISTINCT user_id)
+        FROM turns
+        WHERE league_id = $1 AND matchday = $2 AND user_id IS NOT NULL) AS submitted`,
+    [leagueId, matchday],
+  )
+
+  const total = Number(result.rows[0]?.total ?? 0)
+  const submitted = Number(result.rows[0]?.submitted ?? 0)
+
+  return {
+    submitted,
+    total,
+    allSubmitted: total > 0 && submitted >= total,
+  }
 }
 
 async function getStandings(leagueId: string): Promise<StandingRow[]> {
@@ -259,14 +289,30 @@ leagueRouter.post("/leagues", async (req: AuthenticatedRequest, res: Response) =
 
     const clubs = Array.isArray(req.body?.clubs) ? (req.body.clubs as ClubInput[]) : []
     const matches = Array.isArray(req.body?.matches) ? (req.body.matches as MatchInput[]) : []
+    const insertedClubs: ClubRow[] = []
 
-    for (const club of clubs) {
-      await client.query(
-        `INSERT INTO clubs (id, league_id, name, short_name, squad, tactics, finances)
-         VALUES (COALESCE($1::uuid, gen_random_uuid()), $2, $3, $4, $5, $6, $7)`,
+    const clubsToCreate: ClubInput[] =
+      clubs.length > 0
+        ? clubs
+        : [
+            {
+              name: req.body?.clubName ?? "Manager FC",
+              shortName: req.body?.clubShortName ?? "MFC",
+              squad: [],
+              tactics: {},
+              finances: {},
+            },
+          ]
+
+    for (const club of clubsToCreate) {
+      const clubResult = await client.query<ClubRow>(
+        `INSERT INTO clubs (id, league_id, manager_user_id, name, short_name, squad, tactics, finances)
+         VALUES (COALESCE($1::uuid, gen_random_uuid()), $2, $3, $4, $5, $6, $7, $8)
+         RETURNING *`,
         [
           club.id ?? null,
           league.id,
+          userId,
           club.name ?? "New Club",
           club.shortName ?? club.short_name ?? "NEW",
           club.squad ?? [],
@@ -274,6 +320,7 @@ leagueRouter.post("/leagues", async (req: AuthenticatedRequest, res: Response) =
           club.finances ?? {},
         ],
       )
+      insertedClubs.push(clubResult.rows[0])
     }
 
     for (const match of matches) {
@@ -305,7 +352,7 @@ leagueRouter.post("/leagues", async (req: AuthenticatedRequest, res: Response) =
     }
 
     await client.query("COMMIT")
-    res.status(201).json({ ...mapLeague(league), clubs, matches })
+    res.status(201).json({ ...mapLeague(league), clubs: insertedClubs.map(mapClub), matches })
   } catch (error) {
     await client.query("ROLLBACK")
     res.status(500).json({ error: "Failed to create league" })
@@ -352,11 +399,12 @@ leagueRouter.get("/leagues/:id", async (req: Request, res: Response) => {
     return
   }
 
-  const [clubs, matches, turns, standings] = await Promise.all([
+  const [clubs, matches, turns, standings, turnStatus] = await Promise.all([
     pool.query<ClubRow>("SELECT * FROM clubs WHERE league_id = $1 ORDER BY name ASC", [league.id]),
     pool.query<MatchRow>("SELECT * FROM matches WHERE league_id = $1 ORDER BY matchday ASC, scheduled_at ASC", [league.id]),
     pool.query<TurnRow>("SELECT * FROM turns WHERE league_id = $1 ORDER BY submitted_at DESC", [league.id]),
     getStandings(league.id),
+    getTurnStatus(league.id, league.current_matchday),
   ])
 
   res.json({
@@ -365,13 +413,19 @@ leagueRouter.get("/leagues/:id", async (req: Request, res: Response) => {
     matches: matches.rows.map(mapMatch),
     turns: turns.rows.map(mapTurn),
     standings,
+    turnStatus,
   })
 })
 
-leagueRouter.post("/leagues/:id/turn", async (req: Request, res: Response) => {
+leagueRouter.post("/leagues/:id/turn", async (req: AuthenticatedRequest, res: Response) => {
   const league = await getLeagueById(routeParam(req.params.id))
   if (!league) {
     res.status(404).json({ error: "League not found" })
+    return
+  }
+
+  if (!req.user?.id) {
+    res.status(401).json({ error: "Authentication required" })
     return
   }
 
@@ -381,15 +435,16 @@ leagueRouter.post("/leagues/:id/turn", async (req: Request, res: Response) => {
   }
 
   const turnResult = await pool.query<TurnRow>(
-    `INSERT INTO turns (league_id, club_id, matchday, lineup, tactics)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO turns (league_id, club_id, user_id, matchday, lineup, tactics)
+     VALUES ($1, $2, $3, $4, $5, $6)
      ON CONFLICT (league_id, club_id, matchday)
-     DO UPDATE SET lineup = EXCLUDED.lineup, tactics = EXCLUDED.tactics, submitted_at = NOW()
+     DO UPDATE SET user_id = EXCLUDED.user_id, lineup = EXCLUDED.lineup, tactics = EXCLUDED.tactics, submitted_at = NOW()
      RETURNING *`,
-    [league.id, req.body.clubId, req.body.matchday ?? league.current_matchday, req.body.lineup, req.body.tactics],
+    [league.id, req.body.clubId, req.user.id, req.body.matchday ?? league.current_matchday, req.body.lineup, req.body.tactics],
   )
+  const turnStatus = await getTurnStatus(league.id, req.body.matchday ?? league.current_matchday)
 
-  res.status(201).json({ ok: true, turn: mapTurn(turnResult.rows[0]) })
+  res.status(201).json({ ok: true, turn: mapTurn(turnResult.rows[0]), turnStatus })
 })
 
 leagueRouter.get("/leagues/:id/standings", async (req: Request, res: Response) => {

@@ -65,9 +65,30 @@ CREATE TABLE IF NOT EXISTS turns (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   league_id UUID NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
   club_id UUID NOT NULL REFERENCES clubs(id) ON DELETE CASCADE,
+  user_id UUID REFERENCES users(id) ON DELETE SET NULL,
   matchday INTEGER NOT NULL,
   lineup JSONB NOT NULL,
   tactics JSONB NOT NULL,
   submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (league_id, club_id, matchday)
 );
+
+ALTER TABLE turns ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE SET NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS turns_league_user_matchday_idx
+  ON turns (league_id, user_id, matchday)
+  WHERE user_id IS NOT NULL;
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime')
+    AND NOT EXISTS (
+      SELECT 1
+      FROM pg_publication_tables
+      WHERE pubname = 'supabase_realtime'
+        AND schemaname = 'public'
+        AND tablename = 'turns'
+    ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE turns;
+  END IF;
+END $$;

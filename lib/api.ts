@@ -25,10 +25,30 @@ export type LeagueResponse = {
   status: string
   createdAt: string
   updatedAt: string
-  clubs?: unknown[]
+  clubs?: ClubResponse[]
   matches?: unknown[]
   turns?: unknown[]
   standings?: StandingRow[]
+  turnStatus?: TurnStatus
+}
+
+export type ClubResponse = {
+  id: string
+  leagueId: string
+  managerUserId: string | null
+  name: string
+  shortName: string
+  squad: unknown[]
+  tactics: Record<string, unknown>
+  finances: Record<string, unknown>
+  createdAt: string
+  updatedAt: string
+}
+
+export type TurnStatus = {
+  submitted: number
+  total: number
+  allSubmitted: boolean
 }
 
 export type StandingRow = {
@@ -110,7 +130,7 @@ export function fetchLeague(token: string, leagueId: string): Promise<LeagueResp
 }
 
 export function submitTurn(token: string, leagueId: string, payload: TurnPayload) {
-  return apiFetch<{ ok: boolean; turn: unknown }>(`/leagues/${leagueId}/turn`, {
+  return apiFetch<{ ok: boolean; turn: unknown; turnStatus: TurnStatus }>(`/leagues/${leagueId}/turn`, {
     method: "POST",
     token,
     body: JSON.stringify(payload),

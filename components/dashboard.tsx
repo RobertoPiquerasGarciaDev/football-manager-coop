@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useCallback, useState } from "react"
 import { CalendarDays, Users } from "lucide-react"
 import { AuthScreen } from "@/components/auth-screen"
 import { TopBar } from "@/components/top-bar"
@@ -26,7 +26,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { useAuth } from "@/hooks/use-auth"
-import { createLeague, joinLeague, type LeagueResponse } from "@/lib/api"
+import { useLeagueRealtime } from "@/hooks/use-league-realtime"
+import { createLeague, fetchLeague, joinLeague, submitTurn, type LeagueResponse } from "@/lib/api"
 import { useGame } from "@/lib/game-provider"
 import type { GameSave, Match, MatchEvent } from "@/lib/types"
 
@@ -76,6 +77,7 @@ export default function Dashboard() {
   const [leagueSyncError, setLeagueSyncError] = useState<string | null>(null)
   const [remoteLeague, setRemoteLeague] = useState<LeagueResponse | null>(null)
   const [isLeagueActionPending, setIsLeagueActionPending] = useState(false)
+  const [isTurnSubmitting, setIsTurnSubmitting] = useState(false)
   const { isLoading, token, user, logout } = useAuth()
   const { save, advanceTurn } = useGame()
 
@@ -90,6 +92,27 @@ export default function Dashboard() {
     setResultMatch(simulatedMatch)
     setIsResultOpen(true)
   }
+
+  const refreshRemoteLeague = useCallback(async () => {
+    if (!token || !remoteLeague?.id) return
+
+    try {
+      const league = await fetchLeague(token, remoteLeague.id)
+      setRemoteLeague(league)
+      if (league.turnStatus?.allSubmitted) {
+        setLeagueSyncMessage("Todos los managers han enviado su turno. Dashboard actualizado.")
+      } else if (league.turnStatus) {
+        setLeagueSyncMessage(`Turnos enviados: ${league.turnStatus.submitted}/${league.turnStatus.total}`)
+      }
+    } catch (error) {
+      setLeagueSyncError(error instanceof Error ? error.message : "No se pudo refrescar la liga")
+    }
+  }, [remoteLeague?.id, token])
+
+  useLeagueRealtime({
+    leagueId: remoteLeague?.id ?? null,
+    onTurnChange: refreshRemoteLeague,
+  })
 
   async function handleCreateLeague() {
     if (!token) return
@@ -122,6 +145,34 @@ export default function Dashboard() {
       setLeagueSyncError(error instanceof Error ? error.message : "No se pudo unir a la liga")
     } finally {
       setIsLeagueActionPending(false)
+    }
+  }
+
+  async function handleSubmitTurn() {
+    const clubId = remoteLeague?.clubs?.[0]?.id
+    if (!token || !remoteLeague?.id || !clubId) return
+
+    setIsTurnSubmitting(true)
+    setLeagueSyncError(null)
+    setLeagueSyncMessage(null)
+
+    try {
+      const response = await submitTurn(token, remoteLeague.id, {
+        clubId,
+        matchday: remoteLeague.currentMatchday,
+        lineup: save.clubs.find((club) => club.id === save.userClubId)?.tactics.lineup ?? [],
+        tactics: save.clubs.find((club) => club.id === save.userClubId)?.tactics ?? {},
+      })
+      setRemoteLeague((league) => (league ? { ...league, turnStatus: response.turnStatus } : league))
+      setLeagueSyncMessage(
+        response.turnStatus.allSubmitted
+          ? "Todos los managers han enviado su turno. Dashboard actualizado."
+          : `Turno enviado: ${response.turnStatus.submitted}/${response.turnStatus.total}`,
+      )
+    } catch (error) {
+      setLeagueSyncError(error instanceof Error ? error.message : "No se pudo enviar el turno")
+    } finally {
+      setIsTurnSubmitting(false)
     }
   }
 
@@ -174,6 +225,21 @@ export default function Dashboard() {
             {(leagueSyncMessage || remoteLeague) && (
               <p className="text-[11px] text-[var(--success-green)]">
                 {leagueSyncMessage ?? `Liga activa: ${remoteLeague?.name}`}
+              </p>
+            )}
+            {remoteLeague && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleSubmitTurn}
+                disabled={isTurnSubmitting || !remoteLeague.clubs?.[0]?.id}
+              >
+                {isTurnSubmitting ? "Enviando turno..." : "Enviar Turno"}
+              </Button>
+            )}
+            {remoteLeague?.turnStatus && (
+              <p className="text-[11px] text-muted-foreground">
+                Turnos enviados: {remoteLeague.turnStatus.submitted}/{remoteLeague.turnStatus.total}
               </p>
             )}
             {leagueSyncError && <p className="text-[11px] text-destructive">{leagueSyncError}</p>}

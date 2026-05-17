@@ -11,9 +11,12 @@ __v0_jsx-dev-runtime.ts
 .env.*
 .env*.local
 server/.env
+!.env.example
+!server/.env.example
 
 # Common ignores
 node_modules
+.pnpm-store/
 .next/
 .DS_Store
 dist/
