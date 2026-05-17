@@ -1,0 +1,4 @@
+-- Production seed reference: schema.sql uses this same generate_series strategy
+-- to create 10,000 realistic players idempotently in Supabase.
+-- It includes identity, nationality, dual-nationality, 24 attributes,
+-- age curve, hidden potential, value, wage, contract and release clause.

@@ -282,3 +282,53 @@ export function sendChatMessage(token: string, leagueId: string, body: string, c
     body: JSON.stringify({ body, channel }),
   })
 }
+
+export type StaffMember = {
+  id: string
+  name: string
+  role: string
+  level: number
+  region?: string | null
+  weekly_wage?: number
+}
+
+export function fetchPlayers(token: string, leagueId: string) {
+  return apiFetch<unknown[]>(`/leagues/${leagueId}/players`, { token })
+}
+
+export function fetchFormations(token: string) {
+  return apiFetch<{ formations: Array<{ id: string; description: string; strengths: string; weaknesses: string }> }>("/tactics/formations", {
+    token,
+  })
+}
+
+export function fetchStaff(token: string, leagueId: string): Promise<StaffMember[]> {
+  return apiFetch<StaffMember[]>(`/leagues/${leagueId}/staff`, { token })
+}
+
+export function hireStaff(token: string, leagueId: string, payload: { role: string; level: number; region?: string }) {
+  return apiFetch<StaffMember>(`/leagues/${leagueId}/staff/hire`, {
+    method: "POST",
+    token,
+    body: JSON.stringify(payload),
+  })
+}
+
+export function generateYouth(token: string, leagueId: string, academyLevel = 3) {
+  return apiFetch<{ ok: boolean; youthPlayers: unknown[] }>(`/leagues/${leagueId}/youth/generate`, {
+    method: "POST",
+    token,
+    body: JSON.stringify({ academyLevel }),
+  })
+}
+
+export function simulateWeek(token: string, leagueId: string, week = 1) {
+  return apiFetch<{ ok: boolean; injuries: number; personalEvents: number; nationalCalls: number; playersProcessed: number }>(
+    `/leagues/${leagueId}/simulate-week`,
+    {
+      method: "POST",
+      token,
+      body: JSON.stringify({ week }),
+    },
+  )
+}

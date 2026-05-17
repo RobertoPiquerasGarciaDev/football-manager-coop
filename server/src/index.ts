@@ -5,6 +5,7 @@ import type { NextFunction, Request, Response } from "express"
 import { authMiddleware } from "./auth"
 import { runMigrations } from "./db/migrations"
 import { authRouter } from "./routes/auth"
+import { gameSystemsRouter } from "./routes/game-systems"
 import { leagueRouter } from "./routes/league"
 
 dotenv.config()
@@ -46,6 +47,7 @@ app.get("/health", (_req, res) => {
 
 app.use(authRouter)
 app.use(authMiddleware, leagueRouter)
+app.use(authMiddleware, gameSystemsRouter)
 app.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
   console.error("Unhandled API error", error)
   res.status(500).json({ error: "Internal server error" })

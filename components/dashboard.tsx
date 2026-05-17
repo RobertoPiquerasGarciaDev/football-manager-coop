@@ -39,8 +39,9 @@ const AcademySection = dynamic(() => import("@/components/academy-section").then
 const CooperativeSection = dynamic(() => import("@/components/cooperative-section").then((mod) => mod.CooperativeSection))
 const FinanceSection = dynamic(() => import("@/components/finance-section").then((mod) => mod.FinanceSection))
 const SettingsSection = dynamic(() => import("@/components/settings-section").then((mod) => mod.SettingsSection))
+const StaffSection = dynamic(() => import("@/components/staff-section").then((mod) => mod.StaffSection))
 
-export type TabId = "dashboard" | "squad" | "tactics" | "market" | "league" | "academy" | "finance" | "coop" | "settings"
+export type TabId = "dashboard" | "squad" | "tactics" | "market" | "league" | "academy" | "finance" | "staff" | "coop" | "settings"
 
 function SectionTitle({ title, subtitle }: { title: string; subtitle: string }) {
   return (
@@ -707,6 +708,13 @@ export default function Dashboard() {
           <>
             <SectionTitle title="Finance Office" subtitle="Track income, expenses and fair play risk" />
             <FinanceSection />
+          </>
+        )}
+
+        {activeTab === "staff" && (
+          <>
+            <SectionTitle title="Staff Room" subtitle="Hire coaches, scouts, analysts and medical staff" />
+            <StaffSection leagueId={remoteLeague.id} />
           </>
         )}
 

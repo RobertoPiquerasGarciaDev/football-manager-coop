@@ -92,6 +92,16 @@ const navItems: NavItem[] = [
     ),
   },
   {
+    id: "staff",
+    label: "Staff",
+    icon: (active) => (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active ? "var(--amber)" : "currentColor"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 3l8 4v6c0 4-3 7-8 8-5-1-8-4-8-8V7l8-4z" fill={active ? "var(--amber)" : "none"} fillOpacity={active ? 0.2 : 0} />
+        <path d="M9 12h6M12 9v6" />
+      </svg>
+    ),
+  },
+  {
     id: "coop",
     label: "Co-op",
     icon: (active) => (

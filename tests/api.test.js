@@ -163,4 +163,60 @@ describe("Pitch Perfect production API", () => {
     const notifications = await api("/notifications", { token: userB.token })
     expect(notifications.length).toBeGreaterThan(0)
   })
+
+  test("v5 jugadores, lesiones, forma, staff, cantera y fair play", async () => {
+    const players = await api("/players?limit=25", { token: userA.token })
+    expect(players.length).toBe(25)
+    expect(players[0].attributes).toBeTruthy()
+    expect(players[0].market_value).toBeGreaterThan(0)
+
+    const generated = await api(`/leagues/${leagueId}/players/generate`, { method: "POST", token: userA.token })
+    expect(generated.count).toBeGreaterThanOrEqual(100)
+
+    const formations = await api("/tactics/formations", { token: userA.token })
+    expect(formations.formations).toHaveLength(20)
+
+    const staff = await api(`/leagues/${leagueId}/staff/hire`, {
+      method: "POST",
+      token: userA.token,
+      body: JSON.stringify({ role: "tactical_analyst", level: 4, region: "Europe" }),
+    })
+    expect(staff.level).toBe(4)
+    const analysis = await api(`/leagues/${leagueId}/tactics/analysis`, { token: userA.token })
+    expect(analysis.available).toBe(true)
+
+    const youth = await api(`/leagues/${leagueId}/youth/generate`, {
+      method: "POST",
+      token: userA.token,
+      body: JSON.stringify({ academyLevel: 5, count: 8 }),
+    })
+    expect(youth.youthPlayers.length).toBeGreaterThanOrEqual(5)
+
+    const loan = await api(`/leagues/${leagueId}/loans`, {
+      method: "POST",
+      token: userA.token,
+      body: JSON.stringify({ type: "short_term", principal: 3000000 }),
+    })
+    expect(loan.monthly_payment).toBeGreaterThan(0)
+
+    const asset = await api(`/leagues/${leagueId}/assets/naming-rights`, {
+      method: "POST",
+      token: userA.token,
+      body: JSON.stringify({ sponsor: "Emirates", upfront: 8000000 }),
+    })
+    expect(asset.monetized).toBe(true)
+
+    const week = await api(`/leagues/${leagueId}/simulate-week`, {
+      method: "POST",
+      token: userA.token,
+      body: JSON.stringify({ week: 2 }),
+    })
+    expect(week.playersProcessed).toBeGreaterThan(0)
+    expect(week).toHaveProperty("injuries")
+    expect(week).toHaveProperty("personalEvents")
+
+    const ffp = await api(`/leagues/${leagueId}/ffp`, { token: userA.token })
+    expect(["1:1", "1:4"]).toContain(ffp.rule)
+    expect(ffp.levers).toContain("naming_rights")
+  })
 })
