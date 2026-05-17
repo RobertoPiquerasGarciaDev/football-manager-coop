@@ -1,7 +1,19 @@
 import { moraleBandFromScore, type Club, type GameSave, type LeagueStanding, type Match, type MatchResultCode } from "@/lib/types"
 import { simulateMatch, type MatchSimClub } from "@/lib/engine/match-simulator"
+import { progressPlayers } from "@/lib/engine/progression"
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
+const academyNames = ["Mateo Silva", "Noah Brandt", "Iker Ramos", "Theo Moreau", "Dario Klein", "Enzo Vidal"]
+const academyPositions = ["GK", "CB", "CM", "CAM", "RW", "ST"] as const
+
+const defaultTrainingPlan = {
+  weekNumber: 1,
+  sessions: [
+    { id: "default-tech", category: "technical" as const, focusAttributes: ["passing", "technique", "shooting"], fatigueCost: 16, scheduledDay: 1 },
+    { id: "default-phys", category: "physical" as const, focusAttributes: ["pace", "stamina", "strength"], fatigueCost: 18, scheduledDay: 3 },
+    { id: "default-rec", category: "recovery" as const, focusAttributes: ["concentration", "teamwork"], fatigueCost: 4, scheduledDay: 5 },
+  ],
+}
 
 function clubWithSquad(save: GameSave, club: Club): MatchSimClub {
   return {
@@ -124,10 +136,59 @@ function moraleDeltaFor(clubId: string, matches: Match[]): number {
 function updateClubs(save: GameSave, matches: Match[]): Club[] {
   return save.clubs.map((club) => {
     const delta = moraleDeltaFor(club.id, matches)
-    if (delta === 0) return club
+    const homeMatches = matches.filter((match) => match.homeClubId === club.id).length
+    const matchdayIncome = homeMatches * club.stadium.capacity * 24
+    const tvIncome = Math.round(club.finances.incomeBreakdown.tvRights / 4)
+    const sponsorIncome = club.sponsorDeals.reduce((sum, deal) => sum + deal.weeklyIncome, 0)
+    const staffWages = club.staff.reduce((sum, staff) => sum + staff.weeklyWage, 0)
+    const wagePenalty =
+      club.finances.weeklyWageBill > club.finances.monthlyProjectedIncome / 3 ? Math.round(club.finances.weeklyWageBill * 0.12) : 0
+    const weeklyExpenses = club.finances.weeklyWageBill + staffWages + wagePenalty
+    const weeklyIncome = matchdayIncome + tvIncome + sponsorIncome
+    const wageBillPercent = Math.round((club.finances.weeklyWageBill * 4 / Math.max(1, club.finances.monthlyProjectedIncome)) * 100)
+    const shouldCreateProspect = club.isUserControlled && save.currentMatchday % 4 === 0 && club.youthProspects.length < 6
+    const nextProspectIndex = club.youthProspects.length
+    const nextProspectPosition = academyPositions[nextProspectIndex % academyPositions.length]
+
     return {
       ...club,
-      squadMorale: clamp(club.squadMorale + delta, 0, 100),
+      finances: {
+        ...club.finances,
+        balance: club.finances.balance + weeklyIncome - weeklyExpenses,
+        wageBillPercent,
+        weeklyWageRoom: Math.max(0, Math.round(club.finances.monthlyProjectedIncome / 16 - club.finances.weeklyWageBill)),
+        incomeBreakdown: {
+          ...club.finances.incomeBreakdown,
+          tickets: club.finances.incomeBreakdown.tickets + matchdayIncome,
+          tvRights: club.finances.incomeBreakdown.tvRights + tvIncome,
+          sponsors: club.finances.incomeBreakdown.sponsors + sponsorIncome,
+        },
+        wageCapPenalty: wageBillPercent >= 95 ? "transfer_ban" : wageBillPercent >= 80 ? "warning" : "none",
+      },
+      youthProspects: [
+        ...club.youthProspects.map((prospect) => ({
+          ...prospect,
+          weeksInAcademy: prospect.weeksInAcademy + 1,
+          overallRating: clamp(prospect.overallRating + (prospect.age <= 18 ? 1 : 0), 45, 82),
+        })),
+        ...(shouldCreateProspect
+          ? [
+              {
+                id: `prospect-${Date.now()}-${nextProspectIndex}`,
+                generatedName: academyNames[nextProspectIndex % academyNames.length],
+                age: 16 + (nextProspectIndex % 3),
+                position: nextProspectPosition,
+                positionGroup: nextProspectPosition === "GK" ? "GK" as const : nextProspectPosition === "CB" ? "DEF" as const : nextProspectPosition === "CM" || nextProspectPosition === "CAM" ? "MID" as const : "FWD" as const,
+                potentialHidden: nextProspectIndex % 2 === 0,
+                revealedPotential: nextProspectIndex % 2 === 0 ? null : 82 + nextProspectIndex,
+                overallRating: 58 + nextProspectIndex,
+                academyCategory: nextProspectIndex % 3 === 0 ? "u16" as const : nextProspectIndex % 3 === 1 ? "u18" as const : "u21" as const,
+                weeksInAcademy: 0,
+              },
+            ]
+          : []),
+      ],
+      squadMorale: clamp(club.squadMorale + delta - (wagePenalty > 0 ? 2 : 0), 0, 100),
       updatedAt: new Date().toISOString(),
     }
   })
@@ -216,13 +277,23 @@ export function advanceTurn(save: GameSave): GameSave {
   const matches = save.matches.map((match) => simulatedById.get(match.id) ?? match)
   const advancedMatchday = Math.max(...simulatedMatches.map((match) => match.matchday)) + 1
 
+  const playersAfterMatch = updatePlayers(save, simulatedMatches)
+  const clubsAfterMatch = updateClubs(save, simulatedMatches)
+  const userClub = clubsAfterMatch.find((club) => club.id === save.userClubId)
+  const trainingPlan = userClub?.currentTrainingPlan ?? defaultTrainingPlan
+  const progressedUserSquad = progressPlayers(
+    playersAfterMatch.filter((player) => player.clubId === save.userClubId),
+    trainingPlan,
+  )
+  const progressedById = new Map(progressedUserSquad.map((player) => [player.id, player]))
+
   return {
     ...save,
     currentMatchday: advancedMatchday,
     turnDeadlineAt: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString(),
     matches,
-    clubs: updateClubs(save, simulatedMatches),
-    players: updatePlayers(save, simulatedMatches),
+    clubs: clubsAfterMatch,
+    players: playersAfterMatch.map((player) => progressedById.get(player.id) ?? player),
     standings: updateStandings(save, simulatedMatches),
     seasons: save.seasons.map((season) =>
       season.id === save.currentSeasonId

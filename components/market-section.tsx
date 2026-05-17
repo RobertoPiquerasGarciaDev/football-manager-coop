@@ -2,6 +2,8 @@
 
 import { useState } from "react"
 import { Search, ChevronRight, ArrowDownLeft, Star, TrendingUp, Clock } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { useToast } from "@/hooks/use-toast"
 import type { PositionGroup, ValueTrend } from "@/lib/types"
 import { formatMoney, formatWage } from "@/lib/format"
 import { useGame, type UserBidRow } from "@/lib/game-provider"
@@ -49,7 +51,9 @@ export function MarketSection() {
     getMarketStats,
     getUserOutgoingBids,
     isPlayerWatchlisted,
+    processTransfer,
   } = useGame()
+  const { toast } = useToast()
   const marketPlayers = getMarketBrowsePlayers()
   const yourBids = getUserOutgoingBids()
   const marketStatsRaw = getMarketStats()
@@ -241,7 +245,51 @@ export function MarketSection() {
                     <span className="text-[11px] text-muted-foreground">{bid.timeAgoLabel}</span>
                   </div>
                 </div>
-                <ChevronRight className="w-4 h-4 text-muted-foreground/40 group-hover:text-muted-foreground transition-colors shrink-0" />
+                <div className="flex shrink-0 items-center gap-1">
+                  {bid.uiStatus === "negotiating" && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        processTransfer(bid.transfer.id, "accepted")
+                        toast({ title: "Counteroffer accepted", description: `${bid.player.displayName} negotiation completed.` })
+                      }}
+                    >
+                      Accept
+                    </Button>
+                  )}
+                  {bid.uiStatus === "pending" && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        processTransfer(bid.transfer.id, "countered")
+                        toast({ title: "Counteroffer sent", description: "The other club was notified in the transfer feed." })
+                      }}
+                    >
+                      Counter
+                    </Button>
+                  )}
+                  {bid.uiStatus !== "accepted" && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        processTransfer(bid.transfer.id, "rejected")
+                        toast({ title: "Offer rejected", description: `${bid.player.displayName} stays on your shortlist.` })
+                      }}
+                    >
+                      Reject
+                    </Button>
+                  )}
+                  <ChevronRight className="w-4 h-4 text-muted-foreground/40 group-hover:text-muted-foreground transition-colors" />
+                </div>
               </button>
             )
           })}

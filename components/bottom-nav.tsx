@@ -69,6 +69,39 @@ const navItems: NavItem[] = [
       </svg>
     ),
   },
+  {
+    id: "academy",
+    label: "Academy",
+    icon: (active) => (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active ? "var(--amber)" : "currentColor"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 3l7 4v5c0 4-3 7-7 9-4-2-7-5-7-9V7l7-4z" fill={active ? "var(--amber)" : "none"} fillOpacity={active ? 0.2 : 0} />
+        <path d="M9 12l2 2 4-5" />
+      </svg>
+    ),
+  },
+  {
+    id: "finance",
+    label: "Finance",
+    icon: (active) => (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active ? "var(--amber)" : "currentColor"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3 21h18" />
+        <path d="M4 10h16" />
+        <path d="M6 10v8M10 10v8M14 10v8M18 10v8" />
+        <path d="M12 3l8 5H4l8-5z" fill={active ? "var(--amber)" : "none"} fillOpacity={active ? 0.2 : 0} />
+      </svg>
+    ),
+  },
+  {
+    id: "coop",
+    label: "Co-op",
+    icon: (active) => (
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active ? "var(--amber)" : "currentColor"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="8" cy="8" r="3" fill={active ? "var(--amber)" : "none"} fillOpacity={active ? 0.2 : 0} />
+        <circle cx="16" cy="8" r="3" />
+        <path d="M3 21v-2a5 5 0 015-5M21 21v-2a5 5 0 00-5-5" />
+      </svg>
+    ),
+  },
 ]
 
 interface BottomNavProps {
@@ -79,14 +112,14 @@ interface BottomNavProps {
 export function BottomNav({ activeTab, onTabChange }: BottomNavProps) {
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-50 bg-card/90 backdrop-blur-xl border-t border-border/50" aria-label="Main navigation">
-      <div className="max-w-md mx-auto flex items-center justify-around px-1 py-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))]">
+      <div className="max-w-md mx-auto flex items-center gap-1 overflow-x-auto px-1 py-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))]">
         {navItems.map((item) => {
           const isActive = activeTab === item.id
           return (
             <button
               key={item.id}
               onClick={() => onTabChange(item.id)}
-              className={`relative flex flex-col items-center gap-1 px-4 py-2 rounded-xl transition-all active:scale-95 ${
+              className={`relative flex min-w-[64px] flex-col items-center gap-1 px-3 py-2 rounded-xl transition-all active:scale-95 ${
                 isActive ? "text-[var(--amber)]" : "text-muted-foreground hover:text-foreground"
               }`}
               aria-current={isActive ? "page" : undefined}
