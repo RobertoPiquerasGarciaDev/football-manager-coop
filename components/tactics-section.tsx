@@ -1,7 +1,9 @@
 "use client"
 
-import { useState } from "react"
-import { ChevronDown, RotateCcw, Save, Zap } from "lucide-react"
+import { useEffect, useMemo, useState } from "react"
+import { CheckCircle2, ChevronDown, RotateCcw, Zap } from "lucide-react"
+import { useAuth } from "@/hooks/use-auth"
+import { saveTactics } from "@/lib/api"
 import type { PlayStyle, Tempo, Width } from "@/lib/types"
 import { useGame, type FormationKey } from "@/lib/game-provider"
 
@@ -24,9 +26,27 @@ function getRatingBg(r: number) {
   return "var(--stats-blue)"
 }
 
-export function TacticsSection() {
+type OnlineTacticsDraft = {
+  leagueId: string
+  clubId: string
+  matchday: number
+  initialTactics?: Record<string, unknown>
+  hasSubmittedTurn: boolean
+  onDraftChange?: (draft: { lineup: unknown[]; tactics: Record<string, unknown> }) => void
+  onSaved?: () => void
+}
+
+export function TacticsSection({ online }: { online?: OnlineTacticsDraft }) {
+  const { token } = useAuth()
   const { formationPresets, getTacticsLineupForFormation, getUserClub } = useGame()
-  const clubTactics = getUserClub().tactics
+  const leagueId = online?.leagueId
+  const clubId = online?.clubId
+  const matchday = online?.matchday
+  const hasSubmittedTurn = online?.hasSubmittedTurn ?? false
+  const clubTactics = useMemo(
+    () => ({ ...getUserClub().tactics, ...(online?.initialTactics ?? {}) }),
+    [getUserClub, online?.initialTactics],
+  )
   const defaultFormation: FormationKey =
     clubTactics.formation in formationPresets ? (clubTactics.formation as FormationKey) : "4-3-3"
 
@@ -35,21 +55,53 @@ export function TacticsSection() {
   const [playStyle, setPlayStyle] = useState<PlayStyle>(clubTactics.playStyle)
   const [tempo, setTempo] = useState<Tempo>(clubTactics.tempo)
   const [width, setWidth] = useState<Width>(clubTactics.width)
+  const [autosaveStatus, setAutosaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle")
 
   const currentFormation = formationPresets[formation]
 
-  const positionsToRender = getTacticsLineupForFormation(formation).map(({ slot, player }) => ({
-    role: slot.role,
-    x: slot.x,
-    y: slot.y,
-    player: {
-      id: player.id,
-      name: player.displayName,
-      shortName: player.shortName,
-      position: player.position,
-      rating: player.overallRating,
-    },
-  }))
+  const positionsToRender = useMemo(
+    () =>
+      getTacticsLineupForFormation(formation).map(({ slot, player }) => ({
+        role: slot.role,
+        x: slot.x,
+        y: slot.y,
+        player: {
+          id: player.id,
+          name: player.displayName,
+          shortName: player.shortName,
+          position: player.position,
+          rating: player.overallRating,
+        },
+      })),
+    [formation, getTacticsLineupForFormation],
+  )
+  const lineup = useMemo(() => positionsToRender.map((position) => position.player), [positionsToRender])
+  const tactics = useMemo(
+    () => ({ ...clubTactics, formation, playStyle, tempo, width, lineup }),
+    [clubTactics, formation, lineup, playStyle, tempo, width],
+  )
+
+  useEffect(() => {
+    if (!leagueId || !clubId || !matchday || !token || hasSubmittedTurn) return
+    online.onDraftChange?.({ lineup, tactics })
+    setAutosaveStatus("saving")
+    const timeout = window.setTimeout(async () => {
+      try {
+        await saveTactics(token, leagueId, {
+          clubId,
+          matchday,
+          lineup,
+          tactics,
+        })
+        setAutosaveStatus("saved")
+        online.onSaved?.()
+      } catch {
+        setAutosaveStatus("error")
+      }
+    }, 450)
+
+    return () => window.clearTimeout(timeout)
+  }, [clubId, hasSubmittedTurn, leagueId, lineup, matchday, online, tactics, token])
 
   return (
     <div className="flex flex-col gap-3 px-4 pt-4 pb-4">
@@ -238,11 +290,22 @@ export function TacticsSection() {
           </div>
         </div>
 
-        {/* Save button */}
-        <button className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-gradient-to-r from-[var(--amber)] to-[#D4961A] text-[var(--primary-foreground)] text-sm font-bold hover:brightness-110 active:scale-[0.98] transition-all shadow-[0_2px_16px_var(--amber-glow)]">
-          <Save className="w-4 h-4" />
-          Save Tactics
-        </button>
+        <div className="flex items-center justify-center gap-2 rounded-xl border border-border/50 bg-secondary/40 py-3 text-xs font-bold text-muted-foreground">
+          {online?.hasSubmittedTurn ? (
+            "Táctica bloqueada para esta jornada"
+          ) : autosaveStatus === "saving" ? (
+            "Guardando automáticamente..."
+          ) : autosaveStatus === "saved" ? (
+            <>
+              <CheckCircle2 className="h-4 w-4 text-[var(--success-green)]" />
+              Táctica guardada automáticamente
+            </>
+          ) : autosaveStatus === "error" ? (
+            "Error guardando táctica"
+          ) : (
+            "Los cambios se guardan automáticamente"
+          )}
+        </div>
       </div>
     </div>
   )

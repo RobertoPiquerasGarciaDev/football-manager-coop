@@ -123,11 +123,12 @@ describe("Pitch Perfect production API", () => {
     const afterDraft = await api(`/leagues/${leagueId}`, { token: userA.token })
     expect(afterDraft.currentMatchday).toBe(full.currentMatchday)
     expect(afterDraft.turnStatus.submitted).toBe(0)
-    await api(`/leagues/${leagueId}/turn`, {
+    const firstTurn = await api(`/leagues/${leagueId}/turn`, {
       method: "POST",
       token: userA.token,
       body: JSON.stringify({ clubId: clubA.id, matchday: full.currentMatchday }),
     })
+    expect(firstTurn.advanced).toBe(false)
     await expect(
       api(`/leagues/${leagueId}/turn`, {
         method: "POST",
@@ -146,6 +147,8 @@ describe("Pitch Perfect production API", () => {
       body: JSON.stringify({ clubId: clubB.id, matchday: full.currentMatchday }),
     })
     expect(turn.advanced).toBe(true)
+    const afterAdvance = await api(`/leagues/${leagueId}`, { token: userA.token })
+    expect(afterAdvance.turns.some((item) => item.userId === null && item.matchday === full.currentMatchday)).toBe(true)
     const standings = await api(`/leagues/${leagueId}/standings`, { token: userA.token })
     expect(standings.length).toBeGreaterThanOrEqual(6)
     expect(standings[0]).toHaveProperty("points")
@@ -162,6 +165,31 @@ describe("Pitch Perfect production API", () => {
     expect(message.body).toBe("QA negotiation ping")
     const notifications = await api("/notifications", { token: userB.token })
     expect(notifications.length).toBeGreaterThan(0)
+  })
+
+  test("modo solitario: enviar turno simula inmediatamente", async () => {
+    const solo = await registerUser("qa-solo", "dynamo", stamp)
+    const created = await api("/leagues", {
+      method: "POST",
+      token: solo.token,
+      body: JSON.stringify({ name: `Solo League ${stamp}`, clubId: "dynamo" }),
+    })
+    await api(`/leagues/${created.id}/ready`, { method: "POST", token: solo.token })
+    await api(`/leagues/${created.id}/ready`, { method: "POST", token: solo.token })
+    const active = await api(`/leagues/${created.id}`, { token: solo.token })
+    const club = active.clubs.find((item) => item.managerUserId === solo.user.id)
+    await api(`/leagues/${created.id}/tactics`, {
+      method: "POST",
+      token: solo.token,
+      body: JSON.stringify({ clubId: club.id, matchday: active.currentMatchday, lineup: Array.from({ length: 11 }, (_, index) => `S${index}`), tactics: { formation: "4-3-3" } }),
+    })
+    const turn = await api(`/leagues/${created.id}/turn`, {
+      method: "POST",
+      token: solo.token,
+      body: JSON.stringify({ clubId: club.id, matchday: active.currentMatchday }),
+    })
+    expect(turn.turnStatus.total).toBe(1)
+    expect(turn.advanced).toBe(true)
   })
 
   test("v5 jugadores, lesiones, forma, staff, cantera y fair play", async () => {

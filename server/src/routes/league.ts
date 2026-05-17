@@ -594,7 +594,7 @@ async function applyWeeklyFinance(client: { query: typeof pool.query }, leagueId
 async function getTurnStatus(leagueId: string, matchday: number): Promise<TurnStatus> {
   const result = await pool.query<{ total: string; submitted: string }>(
     `SELECT
-       (SELECT COUNT(*) FROM league_members WHERE league_id = $1) AS total,
+       (SELECT COUNT(*) FROM league_members WHERE league_id = $1 AND is_bot = FALSE) AS total,
        (SELECT COUNT(DISTINCT user_id)
         FROM turns
         WHERE league_id = $1 AND matchday = $2 AND user_id IS NOT NULL) AS submitted`,
@@ -613,6 +613,36 @@ async function getTurnStatus(leagueId: string, matchday: number): Promise<TurnSt
 
 function scoreFor(seed: string): number {
   return Array.from(seed).reduce((sum, char) => sum + char.charCodeAt(0), 0) % 4
+}
+
+async function ensureBotTurns(client: { query: typeof pool.query }, leagueId: string, matchday: number) {
+  const bots = await client.query<ClubRow>(
+    `SELECT c.*
+     FROM clubs c
+     LEFT JOIN league_members lm ON lm.club_id = c.id
+     WHERE c.league_id = $1
+       AND c.manager_user_id IS NULL
+       AND (lm.id IS NULL OR lm.is_bot = TRUE)`,
+    [leagueId],
+  )
+
+  for (const bot of bots.rows) {
+    const lineup = Array.from({ length: 11 }, (_, index) => `BOT-${bot.short_name}-${index + 1}`)
+    const tactics = { ...(bot.tactics ?? {}), formation: (bot.tactics as { formation?: string })?.formation ?? "4-4-2", ai: true }
+    await client.query(
+      `INSERT INTO tactic_drafts (league_id, club_id, user_id, matchday, lineup, tactics)
+       VALUES ($1, $2, NULL, $3, $4, $5)
+       ON CONFLICT (league_id, club_id, matchday)
+       DO UPDATE SET lineup = EXCLUDED.lineup, tactics = EXCLUDED.tactics, updated_at = NOW()`,
+      [leagueId, bot.id, matchday, jsonb(lineup), jsonb(tactics)],
+    )
+    await client.query(
+      `INSERT INTO turns (league_id, club_id, user_id, matchday, lineup, tactics)
+       VALUES ($1, $2, NULL, $3, $4, $5)
+       ON CONFLICT (league_id, club_id, matchday) DO NOTHING`,
+      [leagueId, bot.id, matchday, jsonb(lineup), jsonb(tactics)],
+    )
+  }
 }
 
 async function ensureMatchdayMatches(client: { query: typeof pool.query }, leagueId: string, matchday: number) {
@@ -737,6 +767,7 @@ async function advanceLeagueIfReady(league: LeagueRow, matchday: number) {
       return { advanced: false, turnStatus: status }
     }
 
+    await ensureBotTurns(client, league.id, matchday)
     const matches = await ensureMatchdayMatches(client, league.id, matchday)
     const finishedMatches: MatchRow[] = []
     for (const match of matches) {
@@ -1094,7 +1125,7 @@ async function handleReady(req: AuthenticatedRequest, res: Response) {
        RETURNING *`,
       [league.id, userId],
     )
-    const members = await client.query<{ count: string }>("SELECT COUNT(*) AS count FROM league_members WHERE league_id = $1", [
+    const members = await client.query<{ count: string }>("SELECT COUNT(*) AS count FROM league_members WHERE league_id = $1 AND is_bot = FALSE", [
       league.id,
     ])
     const total = Number(members.rows[0]?.count ?? 0)
