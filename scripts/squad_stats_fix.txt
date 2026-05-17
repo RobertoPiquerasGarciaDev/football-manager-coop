@@ -1,0 +1,4 @@
+          <DIVELEMENT key={s.label} className="flex flex-col items-center gap-1 p-3 rounded-xl bg-card border border-border/50">
+            <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">{s.label}</span>
+            <span className="text-lg font-black" style={{ color: s.color }}>{s.value}</span>
+          </DIVELEMENT>

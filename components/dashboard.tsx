@@ -1,0 +1,311 @@
+"use client"
+
+import { useState } from "react"
+import { CalendarDays, Users } from "lucide-react"
+import { AuthScreen } from "@/components/auth-screen"
+import { TopBar } from "@/components/top-bar"
+import { NextMatchCard } from "@/components/next-match-card"
+import { QuickStats } from "@/components/quick-stats"
+import { SquadMorale } from "@/components/squad-morale"
+import { TransferAlerts } from "@/components/transfer-alerts"
+import { LeagueTable } from "@/components/league-table"
+import { BottomNav } from "@/components/bottom-nav"
+import { SquadSection } from "@/components/squad-section"
+import { TacticsSection } from "@/components/tactics-section"
+import { MarketSection } from "@/components/market-section"
+import { LeagueSection } from "@/components/league-section"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { useAuth } from "@/hooks/use-auth"
+import { createLeague, joinLeague, type LeagueResponse } from "@/lib/api"
+import { useGame } from "@/lib/game-provider"
+import type { GameSave, Match, MatchEvent } from "@/lib/types"
+
+export type TabId = "dashboard" | "squad" | "tactics" | "market" | "league"
+
+function SectionTitle({ title, subtitle }: { title: string; subtitle: string }) {
+  return (
+    <div className="px-4 pt-4 pb-1">
+      <h1 className="text-lg font-black text-foreground">{title}</h1>
+      <p className="text-[11px] text-muted-foreground">{subtitle}</p>
+    </div>
+  )
+}
+
+function findSimulatedUserMatch(previousSave: GameSave, nextSave: GameSave): Match | null {
+  const previousMatches = new Map(previousSave.matches.map((match) => [match.id, match]))
+  const simulatedMatches = nextSave.matches.filter((match) => {
+    const previous = previousMatches.get(match.id)
+    return previous?.status === "scheduled" && match.status === "finished"
+  })
+
+  return (
+    simulatedMatches.find(
+      (match) => match.homeClubId === nextSave.userClubId || match.awayClubId === nextSave.userClubId,
+    ) ??
+    simulatedMatches[0] ??
+    null
+  )
+}
+
+function getClubName(save: GameSave, clubId: string): string {
+  return save.clubs.find((club) => club.id === clubId)?.name ?? "Unknown club"
+}
+
+function getPlayerName(save: GameSave, event: MatchEvent): string {
+  if (!event.playerId) return "Unknown player"
+  return save.players.find((player) => player.id === event.playerId)?.displayName ?? "Unknown player"
+}
+
+export default function Dashboard() {
+  const [activeTab, setActiveTab] = useState<TabId>("dashboard")
+  const [resultMatch, setResultMatch] = useState<Match | null>(null)
+  const [resultSave, setResultSave] = useState<GameSave | null>(null)
+  const [isResultOpen, setIsResultOpen] = useState(false)
+  const [inviteCode, setInviteCode] = useState("")
+  const [leagueSyncMessage, setLeagueSyncMessage] = useState<string | null>(null)
+  const [leagueSyncError, setLeagueSyncError] = useState<string | null>(null)
+  const [remoteLeague, setRemoteLeague] = useState<LeagueResponse | null>(null)
+  const [isLeagueActionPending, setIsLeagueActionPending] = useState(false)
+  const { isLoading, token, user, logout } = useAuth()
+  const { save, advanceTurn } = useGame()
+
+  const goals = resultMatch?.events.filter((event) => event.type === "goal") ?? []
+  const cards =
+    resultMatch?.events.filter((event) => event.type === "yellow_card" || event.type === "red_card") ?? []
+
+  function handleSimulateMatchday() {
+    const nextSave = advanceTurn()
+    const simulatedMatch = findSimulatedUserMatch(save, nextSave)
+    setResultSave(nextSave)
+    setResultMatch(simulatedMatch)
+    setIsResultOpen(true)
+  }
+
+  async function handleCreateLeague() {
+    if (!token) return
+    setIsLeagueActionPending(true)
+    setLeagueSyncError(null)
+    setLeagueSyncMessage(null)
+
+    try {
+      const league = await createLeague(token, `${save.name} League`)
+      setRemoteLeague(league)
+      setLeagueSyncMessage(`Liga creada. Codigo: ${league.inviteCode ?? "sin codigo"}`)
+    } catch (error) {
+      setLeagueSyncError(error instanceof Error ? error.message : "No se pudo crear la liga")
+    } finally {
+      setIsLeagueActionPending(false)
+    }
+  }
+
+  async function handleJoinLeague() {
+    if (!token || !inviteCode.trim()) return
+    setIsLeagueActionPending(true)
+    setLeagueSyncError(null)
+    setLeagueSyncMessage(null)
+
+    try {
+      const league = await joinLeague(token, inviteCode)
+      setRemoteLeague(league)
+      setLeagueSyncMessage(`Te has unido a ${league.name}`)
+    } catch (error) {
+      setLeagueSyncError(error instanceof Error ? error.message : "No se pudo unir a la liga")
+    } finally {
+      setIsLeagueActionPending(false)
+    }
+  }
+
+  if (isLoading) {
+    return <div className="min-h-screen bg-background max-w-md mx-auto flex items-center justify-center text-sm text-muted-foreground">Cargando sesion...</div>
+  }
+
+  if (!user || !token) {
+    return <AuthScreen />
+  }
+
+  return (
+    <div className="min-h-screen bg-background max-w-md mx-auto relative">
+      {/* Ambient background glow */}
+      <div className="fixed top-0 left-1/2 -translate-x-1/2 w-[600px] h-[400px] rounded-full bg-[var(--amber)] opacity-[0.03] blur-[120px] pointer-events-none" />
+
+      <TopBar />
+      <div className="px-4 pt-3">
+        <div className="rounded-2xl border border-border/50 bg-card p-3">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-bold text-foreground">Manager online</p>
+              <p className="text-[11px] text-muted-foreground">{user.email}</p>
+            </div>
+            <Button type="button" variant="ghost" size="sm" onClick={logout}>
+              Salir
+            </Button>
+          </div>
+          <div className="flex flex-col gap-2">
+            <Button
+              type="button"
+              onClick={handleCreateLeague}
+              disabled={isLeagueActionPending}
+              className="w-full bg-[var(--amber)] text-[var(--primary-foreground)] hover:bg-[var(--amber)]/90"
+            >
+              <Users className="w-4 h-4" />
+              Crear Liga Cooperativa
+            </Button>
+            <div className="flex gap-2">
+              <Input
+                value={inviteCode}
+                onChange={(event) => setInviteCode(event.target.value.toUpperCase())}
+                placeholder="Codigo de invitacion"
+                className="uppercase"
+              />
+              <Button type="button" variant="secondary" onClick={handleJoinLeague} disabled={isLeagueActionPending}>
+                Unirse
+              </Button>
+            </div>
+            {(leagueSyncMessage || remoteLeague) && (
+              <p className="text-[11px] text-[var(--success-green)]">
+                {leagueSyncMessage ?? `Liga activa: ${remoteLeague?.name}`}
+              </p>
+            )}
+            {leagueSyncError && <p className="text-[11px] text-destructive">{leagueSyncError}</p>}
+          </div>
+        </div>
+      </div>
+
+      <main className="pb-24">
+        {activeTab === "dashboard" && (
+          <>
+            <div className="px-4 pt-4">
+              <Button
+                onClick={handleSimulateMatchday}
+                className="w-full bg-[var(--amber)] text-[var(--primary-foreground)] hover:bg-[var(--amber)]/90"
+              >
+                <CalendarDays className="w-4 h-4" />
+                Simular Jornada
+              </Button>
+            </div>
+            <NextMatchCard />
+            <QuickStats />
+            <SquadMorale />
+            <TransferAlerts />
+            <LeagueTable />
+          </>
+        )}
+
+        {activeTab === "squad" && (
+          <>
+            <SectionTitle title="Squad Management" subtitle="Manage your players, fitness & contracts" />
+            <SquadSection />
+          </>
+        )}
+
+        {activeTab === "tactics" && (
+          <>
+            <SectionTitle title="Tactics Board" subtitle="Set formation, play style & instructions" />
+            <TacticsSection />
+          </>
+        )}
+
+        {activeTab === "market" && (
+          <>
+            <SectionTitle title="Transfer Market" subtitle="Scout, bid & negotiate player transfers" />
+            <MarketSection />
+          </>
+        )}
+
+        {activeTab === "league" && (
+          <>
+            <SectionTitle title="League Overview" subtitle="Standings, results & statistics" />
+            <LeagueSection />
+          </>
+        )}
+      </main>
+
+      <BottomNav activeTab={activeTab} onTabChange={setActiveTab} />
+
+      <Dialog open={isResultOpen} onOpenChange={setIsResultOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Resultado de la jornada</DialogTitle>
+            <DialogDescription>
+              {resultMatch && resultSave
+                ? `Matchday ${resultMatch.matchday} · ${getClubName(resultSave, resultMatch.homeClubId)} vs ${getClubName(resultSave, resultMatch.awayClubId)}`
+                : "No había partidos pendientes para simular."}
+            </DialogDescription>
+          </DialogHeader>
+
+          {resultMatch && resultSave ? (
+            <div className="flex flex-col gap-3">
+              <Card className="py-4">
+                <CardContent className="px-4">
+                  <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+                    <div className="text-right">
+                      <p className="text-sm font-bold text-foreground">{getClubName(resultSave, resultMatch.homeClubId)}</p>
+                      <Badge variant="secondary">Home</Badge>
+                    </div>
+                    <div className="px-4 py-2 rounded-xl bg-secondary text-2xl font-black text-foreground">
+                      {resultMatch.homeScore} - {resultMatch.awayScore}
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold text-foreground">{getClubName(resultSave, resultMatch.awayClubId)}</p>
+                      <Badge variant="outline">Away</Badge>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <div className="rounded-xl border border-border/50 p-3">
+                <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-muted-foreground">Goles</h3>
+                {goals.length > 0 ? (
+                  <div className="flex flex-col gap-2">
+                    {goals.map((event) => (
+                      <div key={event.id} className="flex items-center justify-between gap-3 text-sm">
+                        <span className="font-semibold text-foreground">
+                          {event.minute}' · {getPlayerName(resultSave, event)}
+                        </span>
+                        <span className="text-xs text-muted-foreground">{getClubName(resultSave, event.clubId)}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">Sin goles.</p>
+                )}
+              </div>
+
+              <div className="rounded-xl border border-border/50 p-3">
+                <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-muted-foreground">Tarjetas</h3>
+                {cards.length > 0 ? (
+                  <div className="flex flex-col gap-2">
+                    {cards.map((event) => (
+                      <div key={event.id} className="flex items-center justify-between gap-3 text-sm">
+                        <span className="font-semibold text-foreground">
+                          {event.minute}' · {getPlayerName(resultSave, event)}
+                        </span>
+                        <Badge variant={event.type === "red_card" ? "destructive" : "secondary"}>
+                          {event.type === "red_card" ? "Roja" : "Amarilla"}
+                        </Badge>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">Sin tarjetas.</p>
+                )}
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground">No se simuló ningún partido nuevo.</p>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}
