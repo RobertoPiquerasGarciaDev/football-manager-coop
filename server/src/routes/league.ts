@@ -102,6 +102,10 @@ type MatchInput = {
 
 export const leagueRouter = Router()
 
+function jsonb(value: unknown): string {
+  return JSON.stringify(value)
+}
+
 function generateInviteCode(): string {
   return Math.random().toString(36).slice(2, 8).toUpperCase()
 }
@@ -315,9 +319,9 @@ leagueRouter.post("/leagues", async (req: AuthenticatedRequest, res: Response) =
           userId,
           club.name ?? "New Club",
           club.shortName ?? club.short_name ?? "NEW",
-          club.squad ?? [],
-          club.tactics ?? {},
-          club.finances ?? {},
+          jsonb(club.squad ?? []),
+          jsonb(club.tactics ?? {}),
+          jsonb(club.finances ?? {}),
         ],
       )
       insertedClubs.push(clubResult.rows[0])
@@ -344,7 +348,7 @@ leagueRouter.post("/leagues", async (req: AuthenticatedRequest, res: Response) =
           match.status ?? "scheduled",
           match.homeScore ?? match.home_score ?? null,
           match.awayScore ?? match.away_score ?? null,
-          match.events ?? [],
+          jsonb(match.events ?? []),
           match.scheduledAt ?? match.scheduled_at ?? null,
           match.playedAt ?? match.played_at ?? null,
         ],
@@ -434,17 +438,23 @@ leagueRouter.post("/leagues/:id/turn", async (req: AuthenticatedRequest, res: Re
     return
   }
 
-  const turnResult = await pool.query<TurnRow>(
-    `INSERT INTO turns (league_id, club_id, user_id, matchday, lineup, tactics)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     ON CONFLICT (league_id, club_id, matchday)
-     DO UPDATE SET user_id = EXCLUDED.user_id, lineup = EXCLUDED.lineup, tactics = EXCLUDED.tactics, submitted_at = NOW()
-     RETURNING *`,
-    [league.id, req.body.clubId, req.user.id, req.body.matchday ?? league.current_matchday, req.body.lineup, req.body.tactics],
-  )
-  const turnStatus = await getTurnStatus(league.id, req.body.matchday ?? league.current_matchday)
+  try {
+    const matchday = req.body.matchday ?? league.current_matchday
+    const turnResult = await pool.query<TurnRow>(
+      `INSERT INTO turns (league_id, club_id, user_id, matchday, lineup, tactics)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (league_id, club_id, matchday)
+       DO UPDATE SET user_id = EXCLUDED.user_id, lineup = EXCLUDED.lineup, tactics = EXCLUDED.tactics, submitted_at = NOW()
+       RETURNING *`,
+      [league.id, req.body.clubId, req.user.id, matchday, jsonb(req.body.lineup), jsonb(req.body.tactics)],
+    )
+    const turnStatus = await getTurnStatus(league.id, matchday)
 
-  res.status(201).json({ ok: true, turn: mapTurn(turnResult.rows[0]), turnStatus })
+    res.status(201).json({ ok: true, turn: mapTurn(turnResult.rows[0]), turnStatus })
+  } catch (error) {
+    console.error("Failed to submit turn", error)
+    res.status(500).json({ error: "Failed to submit turn" })
+  }
 })
 
 leagueRouter.get("/leagues/:id/standings", async (req: Request, res: Response) => {

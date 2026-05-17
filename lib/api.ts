@@ -81,9 +81,18 @@ async function apiFetch<T>(path: string, { token, headers, ...options }: ApiOpti
     },
   })
 
-  const payload = (await response.json().catch(() => null)) as { error?: string } | null
+  const responseText = await response.text()
+  const payload = responseText
+    ? (() => {
+        try {
+          return JSON.parse(responseText) as { error?: string }
+        } catch {
+          return null
+        }
+      })()
+    : null
   if (!response.ok) {
-    throw new Error(payload?.error ?? "API request failed")
+    throw new Error(payload?.error ?? (responseText || "API request failed"))
   }
 
   return payload as T

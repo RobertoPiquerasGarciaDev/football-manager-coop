@@ -11,7 +11,11 @@ dotenv.config()
 const app = express()
 const port = Number(process.env.PORT ?? 3001)
 
-app.use(cors())
+app.use(
+  cors({
+    origin: ["https://football-manager-ui.vercel.app", "http://localhost:3000"],
+  }),
+)
 app.use(express.json())
 
 app.get("/health", (_req, res) => {
