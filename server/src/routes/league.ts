@@ -505,6 +505,15 @@ async function createBotClubs(client: { query: typeof pool.query }, leagueId: st
   }
 }
 
+async function hasClosedCurrentMarket(leagueId: string, userId: string, status: string) {
+  if (status !== "summer_market" && status !== "winter_market") return false
+  const result = await pool.query<TransferWindowRow>("SELECT * FROM league_transfer_windows WHERE league_id = $1", [leagueId])
+  const window = result.rows[0]
+  if (!window) return false
+  const closedManagers = status === "winter_market" ? window.winter_ready : window.summer_ready
+  return closedManagers.includes(userId)
+}
+
 function calculateMarketValue(input: {
   age: number
   rating: number
@@ -1322,6 +1331,10 @@ leagueRouter.post("/leagues/:id/transfers", async (req: AuthenticatedRequest, re
     res.status(409).json({ error: "Transfers are only available during open transfer windows" })
     return
   }
+  if (await hasClosedCurrentMarket(league.id, userId, league.status)) {
+    res.status(409).json({ error: "You already closed your market for this window" })
+    return
+  }
 
   const client = await pool.connect()
   try {
@@ -1405,6 +1418,10 @@ leagueRouter.post("/leagues/:id/transfer-offers", async (req: AuthenticatedReque
   }
   if (league.status !== "summer_market" && league.status !== "winter_market") {
     res.status(409).json({ error: "Transfers are only available during open transfer windows" })
+    return
+  }
+  if (await hasClosedCurrentMarket(league.id, userId, league.status)) {
+    res.status(409).json({ error: "You already closed your market for this window" })
     return
   }
 

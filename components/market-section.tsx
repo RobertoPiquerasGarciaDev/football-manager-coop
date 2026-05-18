@@ -48,9 +48,11 @@ function listingDeadlineLabel(deadlineAt: string | null): string | undefined {
 export function MarketSection({
   isMarketOpen = true,
   onCreateTransfer,
+  closedMessage = "Mercado cerrado. Las ofertas se reabriran en el mercado de invierno.",
 }: {
   isMarketOpen?: boolean
   onCreateTransfer?: (playerName: string, fee: number) => Promise<void>
+  closedMessage?: string
 }) {
   const {
     getMarketBrowsePlayers,
@@ -128,7 +130,7 @@ export function MarketSection({
         <>
           {!isMarketOpen && (
             <div className="rounded-xl border border-border/50 bg-secondary/40 p-3 text-xs text-muted-foreground">
-              Mercado cerrado. Las ofertas se reabriran en el mercado de invierno.
+              {closedMessage}
             </div>
           )}
           <div className="flex flex-col gap-2">

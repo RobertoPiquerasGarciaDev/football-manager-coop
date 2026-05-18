@@ -105,6 +105,21 @@ describe("Pitch Perfect production API", () => {
       body: JSON.stringify({ status: "accepted" }),
     })
     expect(accepted.status).toBe("accepted")
+    const closed = await api(`/leagues/${leagueId}/ready`, { method: "POST", token: userA.token })
+    expect(closed.readyCount).toBe(1)
+    await expect(
+      api(`/leagues/${leagueId}/transfers`, {
+        method: "POST",
+        token: userA.token,
+        body: JSON.stringify({ playerName: "Closed Market Player", fee: 1000000 }),
+      }),
+    ).rejects.toThrow("closed your market")
+    const rivalTransfer = await api(`/leagues/${leagueId}/transfers`, {
+      method: "POST",
+      token: userB.token,
+      body: JSON.stringify({ playerName: "Still Open Market Player", fee: 1000000 }),
+    })
+    expect(rivalTransfer.ok).toBe(true)
   })
 
   test("flujo cooperativo completo: turnos, simulación, standings y finanzas", async () => {

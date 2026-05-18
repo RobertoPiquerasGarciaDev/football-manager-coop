@@ -286,8 +286,10 @@ export default function Dashboard() {
       setRemoteLeague(league)
       await refreshLeagues()
       toast({
-        title: response.status === "active" ? "Temporada iniciada" : "Listo registrado",
-        description: `${response.readyCount}/${response.total} managers listos`,
+        title: response.status === "active" ? "Temporada iniciada" : isMarketOpen ? "Tu mercado está cerrado" : "Listo registrado",
+        description: isMarketOpen
+          ? `${response.readyCount}/${response.total} managers han cerrado su mercado`
+          : `${response.readyCount}/${response.total} managers listos`,
       })
     } catch (error) {
       setLeagueSyncError(error instanceof Error ? error.message : "No se pudo marcar listo")
@@ -672,10 +674,19 @@ export default function Dashboard() {
               <div className="rounded-2xl border border-[var(--amber)]/30 bg-[var(--amber)]/10 p-3">
                 <p className="text-xs font-black text-foreground">{getLeagueStatusLabel(remoteLeague)}</p>
                 <p className="mt-1 text-[11px] text-muted-foreground">
-                  El mercado esta abierto: puedes fichar, pero la simulacion de jornada esta bloqueada.
+                  Puedes fichar libremente hasta que pulses este botón. Una vez cerrado no podrás hacer más fichajes esta ventana.
+                </p>
+                <div className="mt-3 h-2 overflow-hidden rounded-full bg-background">
+                  <div
+                    className="h-full bg-[var(--amber)] transition-all"
+                    style={{ width: `${managerCount > 0 ? Math.min(100, (readyCount / managerCount) * 100) : 0}%` }}
+                  />
+                </div>
+                <p className="mt-2 text-[11px] font-bold text-foreground">
+                  {readyCount}/{managerCount} managers han cerrado su mercado
                 </p>
                 <Button type="button" size="sm" className="mt-2 w-full" onClick={handleReady} disabled={isLeagueActionPending || isReady}>
-                  {isReady ? "Listo para cerrar mercado" : "Listo para empezar temporada"}
+                  {isReady ? "✓ Mi mercado está cerrado" : "Cerrar mi mercado"}
                 </Button>
               </div>
             )}
@@ -731,7 +742,15 @@ export default function Dashboard() {
         {activeTab === "market" && (
           <>
             <SectionTitle title="Transfer Market" subtitle="Scout, bid & negotiate player transfers" />
-            <MarketSection isMarketOpen={isMarketOpen} onCreateTransfer={handleCreateTransfer} />
+            <MarketSection
+              isMarketOpen={isMarketOpen && !isReady}
+              closedMessage={
+                isMarketOpen && isReady
+                  ? "Ya cerraste tu mercado. El resto de managers puede seguir fichando hasta cerrar el suyo."
+                  : "Mercado cerrado. Las ofertas se reabriran en el mercado de invierno."
+              }
+              onCreateTransfer={handleCreateTransfer}
+            />
           </>
         )}
 
