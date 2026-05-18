@@ -155,7 +155,15 @@ export function login(email: string, password: string): Promise<AuthResponse> {
   })
 }
 
-export function createLeague(token: string, name = "Cooperative League", clubId = "metropolis", budget = 25000000): Promise<LeagueResponse> {
+export function createLeague(
+  token: string,
+  name = "Cooperative League",
+  clubId = "metropolis",
+  options: { budget?: number; humanManagers?: number; turnWindowHours?: 24 | 48 | 72 } = {},
+): Promise<LeagueResponse> {
+  const budget = options.budget ?? 25000000
+  const humanManagers = options.humanManagers ?? 2
+  const turnWindowHours = options.turnWindowHours ?? 48
   return apiFetch<LeagueResponse>("/leagues", {
     method: "POST",
     token,
@@ -163,8 +171,13 @@ export function createLeague(token: string, name = "Cooperative League", clubId 
       name,
       clubId,
       budget,
+      humanManagers,
+      turnWindowHours,
       settings: {
-        turnWindowHours: 48,
+        turnWindowHours,
+        humanManagers,
+        botManagers: 20 - humanManagers,
+        initialBudget: budget,
         privacy: "private",
       },
     }),
@@ -189,6 +202,10 @@ export function fetchLeague(token: string, leagueId: string): Promise<LeagueResp
 
 export function fetchClubAvailability(token: string, leagueId: string): Promise<ClubAvailability[]> {
   return apiFetch<ClubAvailability[]>(`/leagues/${leagueId}/clubs/availability`, { token })
+}
+
+export function fetchClubAvailabilityByInvite(token: string, inviteCode: string): Promise<ClubAvailability[]> {
+  return apiFetch<ClubAvailability[]>(`/leagues/invite/${inviteCode.trim().toUpperCase()}/clubs/availability`, { token })
 }
 
 export function markLeagueReady(token: string, leagueId: string) {

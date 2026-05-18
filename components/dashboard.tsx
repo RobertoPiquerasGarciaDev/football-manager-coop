@@ -30,7 +30,7 @@ import { useAuth } from "@/hooks/use-auth"
 import { useLeagueSync } from "@/hooks/use-league-sync"
 import { useLeagueRealtime } from "@/hooks/use-league-realtime"
 import { useToast } from "@/hooks/use-toast"
-import { createLeague, createTransfer, fetchLeague, joinLeague, listLeagues, markLeagueReady, markNotificationRead, submitTurn, type LeagueResponse } from "@/lib/api"
+import { createLeague, createTransfer, fetchClubAvailabilityByInvite, fetchLeague, joinLeague, listLeagues, markLeagueReady, markNotificationRead, submitTurn, type ClubAvailability, type LeagueResponse } from "@/lib/api"
 import { useGame } from "@/lib/game-provider"
 import { useNotifications } from "@/lib/notifications"
 import type { GameSave, Match, MatchEvent } from "@/lib/types"
@@ -82,6 +82,22 @@ const selectableClubs = [
   { id: "harbor", name: "Harbor City", city: "Bay" },
   { id: "dynamo", name: "Capital Dynamo", city: "Capital" },
   { id: "rovers", name: "Pacific Rovers", city: "Pacific" },
+  { id: "northbridge", name: "Northbridge Athletic", city: "North" },
+  { id: "valencia", name: "Valencia Coast", city: "Coast" },
+  { id: "borough", name: "Royal Borough", city: "Royal" },
+  { id: "olympic", name: "Olympic United", city: "Olympic" },
+  { id: "ironworks", name: "Ironworks FC", city: "Foundry" },
+  { id: "sierra", name: "Sierra Union", city: "Sierra" },
+  { id: "atlantic", name: "Atlantic Sporting", city: "Atlantic" },
+  { id: "aurora", name: "Aurora FC", city: "Aurora" },
+  { id: "monarchs", name: "City Monarchs", city: "Central" },
+  { id: "victoria", name: "Victoria 1889", city: "Victoria" },
+  { id: "riverside", name: "Riverside Town", city: "River" },
+  { id: "alpine", name: "Alpine Club", city: "Alpine" },
+  { id: "desert", name: "Desert Falcons", city: "Desert" },
+  { id: "celticbay", name: "Celtic Bay", city: "Bay" },
+  { id: "frontera", name: "Frontera Norte", city: "North" },
+  { id: "marina", name: "Marina Azul", city: "Marina" },
 ]
 
 function getLeagueStatusLabel(league: LeagueResponse) {
@@ -99,6 +115,10 @@ export default function Dashboard() {
   const [inviteCode, setInviteCode] = useState("")
   const [leagueName, setLeagueName] = useState("Pitch Perfect League")
   const [selectedClub, setSelectedClub] = useState("metropolis")
+  const [humanManagers, setHumanManagers] = useState(2)
+  const [initialBudget, setInitialBudget] = useState(25_000_000)
+  const [turnWindowHours, setTurnWindowHours] = useState<24 | 48 | 72>(48)
+  const [clubAvailability, setClubAvailability] = useState<ClubAvailability[]>([])
   const [hubLeagues, setHubLeagues] = useState<LeagueResponse[]>([])
   const [leagueSyncMessage, setLeagueSyncMessage] = useState<string | null>(null)
   const [leagueSyncError, setLeagueSyncError] = useState<string | null>(null)
@@ -141,6 +161,28 @@ export default function Dashboard() {
   useEffect(() => {
     void refreshLeagues()
   }, [refreshLeagues])
+
+  useEffect(() => {
+    if (!token || inviteCode.trim().length !== 6) {
+      setClubAvailability([])
+      return
+    }
+
+    const timeout = window.setTimeout(async () => {
+      try {
+        const availability = await fetchClubAvailabilityByInvite(token, inviteCode.trim())
+        setClubAvailability(availability)
+        const selected = availability.find((club) => club.id === selectedClub)
+        if (selected?.taken) {
+          setSelectedClub(availability.find((club) => !club.taken)?.id ?? selectedClub)
+        }
+      } catch {
+        setClubAvailability([])
+      }
+    }, 350)
+
+    return () => window.clearTimeout(timeout)
+  }, [inviteCode, selectedClub, token])
 
   const refreshRemoteLeague = useCallback(async () => {
     if (!token || !remoteLeague?.id) return
@@ -192,7 +234,11 @@ export default function Dashboard() {
     setLeagueSyncMessage(null)
 
     try {
-      const league = await createLeague(token, leagueName.trim() || `${save.name} League`, selectedClub)
+      const league = await createLeague(token, leagueName.trim() || `${save.name} League`, selectedClub, {
+        budget: initialBudget,
+        humanManagers,
+        turnWindowHours,
+      })
       setRemoteLeague(league)
       setSelectedLeagueId(league.id)
       setLeagueSyncMessage(`Liga creada. Codigo: ${league.inviteCode ?? "sin codigo"}`)
@@ -207,6 +253,11 @@ export default function Dashboard() {
 
   async function handleJoinLeague() {
     if (!token || !inviteCode.trim()) return
+    const selectedAvailability = clubAvailability.find((club) => club.id === selectedClub)
+    if (selectedAvailability?.taken) {
+      setLeagueSyncError(`Ese club ya está ocupado por ${selectedAvailability.managerName ?? "otro manager"}`)
+      return
+    }
     setIsLeagueActionPending(true)
     setLeagueSyncError(null)
     setLeagueSyncMessage(null)
@@ -356,15 +407,21 @@ export default function Dashboard() {
           <section className="mb-4 rounded-3xl border border-border/50 bg-card/90 p-4">
             <h2 className="mb-3 text-sm font-black text-foreground">Elige tu equipo</h2>
             <div className="grid grid-cols-2 gap-2">
-              {selectableClubs.map((club, index) => {
+              {(clubAvailability.length > 0 ? clubAvailability.map((club) => ({ ...club, city: club.taken ? `Ocupado por ${club.managerName ?? "manager"}` : "Disponible" })) : selectableClubs).map((club, index) => {
                 const selected = selectedClub === club.id
+                const taken = "taken" in club ? club.taken === true : false
                 return (
                   <button
                     key={club.id}
                     type="button"
+                    disabled={taken}
                     onClick={() => setSelectedClub(club.id)}
                     className={`card-3d rounded-2xl border p-3 text-left animate-card-enter ${
-                      selected ? "border-[var(--amber)] bg-[var(--amber)]/15 shadow-[0_0_22px_var(--amber-glow)]" : "border-border/50 bg-secondary/30"
+                      taken
+                        ? "border-border/40 bg-secondary/20 opacity-60"
+                        : selected
+                          ? "border-[var(--amber)] bg-[var(--amber)]/15 shadow-[0_0_22px_var(--amber-glow)]"
+                          : "border-border/50 bg-secondary/30"
                     }`}
                     style={{ animationDelay: `${index * 70}ms` }}
                   >
@@ -373,7 +430,7 @@ export default function Dashboard() {
                         <p className="text-xs font-black text-foreground">{club.name}</p>
                         <p className="text-[10px] text-muted-foreground">{club.city}</p>
                       </div>
-                      {selected && <CheckCircle2 className="h-4 w-4 text-[var(--amber)]" />}
+                      {taken ? <Badge variant="secondary">Ocupado</Badge> : selected && <CheckCircle2 className="h-4 w-4 text-[var(--amber)]" />}
                     </div>
                   </button>
                 )
@@ -385,6 +442,40 @@ export default function Dashboard() {
             <h2 className="mb-3 text-sm font-black text-foreground">Crear Liga</h2>
             <div className="flex flex-col gap-2">
               <Input value={leagueName} onChange={(event) => setLeagueName(event.target.value)} placeholder="Nombre de liga" />
+              <label className="rounded-xl bg-secondary/40 p-3 text-xs text-muted-foreground">
+                Managers humanos: {humanManagers}/20 · Bots automáticos: {20 - humanManagers}
+                <Input
+                  type="range"
+                  min={1}
+                  max={20}
+                  value={humanManagers}
+                  onChange={(event) => setHumanManagers(Number(event.target.value))}
+                  className="mt-2"
+                />
+              </label>
+              <label className="rounded-xl bg-secondary/40 p-3 text-xs text-muted-foreground">
+                Presupuesto inicial común
+                <Input
+                  type="number"
+                  min={5_000_000}
+                  step={1_000_000}
+                  value={initialBudget}
+                  onChange={(event) => setInitialBudget(Number(event.target.value))}
+                  className="mt-2"
+                />
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                {([24, 48, 72] as const).map((hours) => (
+                  <Button
+                    key={hours}
+                    type="button"
+                    variant={turnWindowHours === hours ? "default" : "secondary"}
+                    onClick={() => setTurnWindowHours(hours)}
+                  >
+                    {hours}h
+                  </Button>
+                ))}
+              </div>
               <Button type="button" onClick={handleCreateLeague} disabled={isLeagueActionPending}>
                 <Users className="h-4 w-4" />
                 Crear con {selectableClubs.find((club) => club.id === selectedClub)?.name}

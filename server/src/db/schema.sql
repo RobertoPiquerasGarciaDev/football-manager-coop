@@ -332,6 +332,17 @@ CREATE TABLE IF NOT EXISTS transfer_variables (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS player_watchlist (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  league_id UUID REFERENCES leagues(id) ON DELETE CASCADE,
+  player_id UUID NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+  target_price INTEGER,
+  alert_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (user_id, league_id, player_id)
+);
+
 CREATE TABLE IF NOT EXISTS turns (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   league_id UUID NOT NULL REFERENCES leagues(id) ON DELETE CASCADE,
@@ -397,6 +408,7 @@ CREATE INDEX IF NOT EXISTS assets_club_type_idx ON assets (club_id, type);
 CREATE INDEX IF NOT EXISTS youth_players_club_idx ON youth_players (club_id, status);
 CREATE INDEX IF NOT EXISTS national_team_calls_player_idx ON national_team_calls (player_id, starts_at DESC);
 CREATE INDEX IF NOT EXISTS transfer_variables_offer_idx ON transfer_variables (offer_id);
+CREATE INDEX IF NOT EXISTS player_watchlist_user_idx ON player_watchlist (user_id, league_id);
 CREATE INDEX IF NOT EXISTS league_members_club_id_idx ON league_members (club_id);
 CREATE INDEX IF NOT EXISTS notifications_league_id_idx ON notifications (league_id);
 
@@ -464,7 +476,7 @@ DECLARE
   table_name TEXT;
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime') THEN
-    FOREACH table_name IN ARRAY ARRAY['leagues', 'clubs', 'matches', 'standings', 'transfers', 'transfer_offers', 'club_finances', 'financial_events', 'financial_history', 'chat_messages', 'tactic_drafts', 'players', 'player_events', 'player_form', 'staff_members', 'loans', 'assets', 'youth_players', 'national_team_calls', 'transfer_variables', 'league_transfer_windows', 'transfer_window'] LOOP
+    FOREACH table_name IN ARRAY ARRAY['leagues', 'clubs', 'matches', 'standings', 'transfers', 'transfer_offers', 'club_finances', 'financial_events', 'financial_history', 'chat_messages', 'tactic_drafts', 'players', 'player_events', 'player_form', 'staff_members', 'loans', 'assets', 'youth_players', 'national_team_calls', 'transfer_variables', 'player_watchlist', 'league_transfer_windows', 'transfer_window'] LOOP
       IF NOT EXISTS (
         SELECT 1
         FROM pg_publication_tables

@@ -107,6 +107,63 @@ gameSystemsRouter.get("/players", async (req: AuthenticatedRequest, res: Respons
   res.json(result.rows)
 })
 
+gameSystemsRouter.get("/players/:id", async (req: AuthenticatedRequest, res: Response) => {
+  const playerId = routeParam(req.params.id)
+  const [player, form, events, calls] = await Promise.all([
+    pool.query("SELECT * FROM players WHERE id = $1", [playerId]),
+    pool.query("SELECT * FROM player_form WHERE player_id = $1 ORDER BY week DESC LIMIT 8", [playerId]),
+    pool.query("SELECT * FROM player_events WHERE player_id = $1 ORDER BY created_at DESC LIMIT 20", [playerId]),
+    pool.query("SELECT * FROM national_team_calls WHERE player_id = $1 ORDER BY starts_at DESC LIMIT 10", [playerId]),
+  ])
+  if (!player.rows[0]) {
+    res.status(404).json({ error: "Player not found" })
+    return
+  }
+  res.json({
+    ...player.rows[0],
+    formHistory: form.rows.reverse(),
+    events: events.rows,
+    nationalTeamCalls: calls.rows,
+    scouting: {
+      lowLevel: ["display_name", "position"],
+      mediumLevel: ["display_name", "position", "rating_range"],
+      highLevel: ["display_name", "position", "rating", "potential_hidden", "attributes"],
+    },
+  })
+})
+
+gameSystemsRouter.get("/leagues/:id/watchlist", async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user?.id) {
+    res.status(401).json({ error: "Authentication required" })
+    return
+  }
+  const result = await pool.query(
+    `SELECT pw.*, p.display_name, p.position, p.rating, p.market_value
+     FROM player_watchlist pw
+     INNER JOIN players p ON p.id = pw.player_id
+     WHERE pw.user_id = $1 AND pw.league_id = $2
+     ORDER BY pw.created_at DESC`,
+    [req.user.id, routeParam(req.params.id)],
+  )
+  res.json(result.rows)
+})
+
+gameSystemsRouter.post("/leagues/:id/watchlist", async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user?.id || !req.body?.playerId) {
+    res.status(req.user?.id ? 400 : 401).json({ error: req.user?.id ? "playerId is required" : "Authentication required" })
+    return
+  }
+  const result = await pool.query(
+    `INSERT INTO player_watchlist (user_id, league_id, player_id, target_price, alert_enabled)
+     VALUES ($1, $2, $3, $4, TRUE)
+     ON CONFLICT (user_id, league_id, player_id)
+     DO UPDATE SET target_price = EXCLUDED.target_price, alert_enabled = TRUE
+     RETURNING *`,
+    [req.user.id, routeParam(req.params.id), req.body.playerId, req.body.targetPrice ?? null],
+  )
+  res.status(201).json(result.rows[0])
+})
+
 gameSystemsRouter.get("/leagues/:id/players", async (req: AuthenticatedRequest, res: Response) => {
   const leagueId = routeParam(req.params.id)
   await ensureLeaguePlayers(leagueId)
@@ -150,6 +207,36 @@ gameSystemsRouter.get("/leagues/:id/staff", async (req: AuthenticatedRequest, re
   const leagueId = routeParam(req.params.id)
   const result = await pool.query("SELECT * FROM staff_members WHERE league_id = $1 ORDER BY role ASC, level DESC", [leagueId])
   res.json(result.rows)
+})
+
+gameSystemsRouter.post("/staff/:id/renew", async (req: AuthenticatedRequest, res: Response) => {
+  const result = await pool.query(
+    `UPDATE staff_members
+     SET contract_until = CURRENT_DATE + (($2::integer || ' months')::interval), updated_at = NOW()
+     WHERE id = $1
+     RETURNING *`,
+    [routeParam(req.params.id), Number(req.body?.months ?? 24)],
+  )
+  if (!result.rows[0]) {
+    res.status(404).json({ error: "Staff member not found" })
+    return
+  }
+  res.json(result.rows[0])
+})
+
+gameSystemsRouter.post("/staff/:id/poach", async (req: AuthenticatedRequest, res: Response) => {
+  const result = await pool.query(
+    `UPDATE staff_members
+     SET club_id = $2, league_id = COALESCE($3, league_id), weekly_wage = ROUND(weekly_wage * 1.15), updated_at = NOW()
+     WHERE id = $1
+     RETURNING *`,
+    [routeParam(req.params.id), req.body?.clubId ?? null, req.body?.leagueId ?? null],
+  )
+  if (!result.rows[0]) {
+    res.status(404).json({ error: "Staff member not found" })
+    return
+  }
+  res.json(result.rows[0])
 })
 
 gameSystemsRouter.post("/leagues/:id/staff/hire", async (req: AuthenticatedRequest, res: Response) => {
@@ -249,6 +336,34 @@ gameSystemsRouter.get("/leagues/:id/youth", async (req: AuthenticatedRequest, re
   res.json(result.rows)
 })
 
+gameSystemsRouter.post("/youth/:id/promote", async (req: AuthenticatedRequest, res: Response) => {
+  const youth = await pool.query("SELECT * FROM youth_players WHERE id = $1", [routeParam(req.params.id)])
+  if (!youth.rows[0]) {
+    res.status(404).json({ error: "Youth player not found" })
+    return
+  }
+  const item = youth.rows[0]
+  const player = await pool.query(
+    `INSERT INTO players (display_name, nationality, age, position, dominant_foot, attributes, rating, potential_hidden, market_value, weekly_wage, club_id)
+     VALUES ($1, $2, $3, $4, 'right', $5, $6, $7, $8, $9, $10)
+     RETURNING *`,
+    [
+      item.display_name,
+      item.nationality,
+      Math.max(18, Number(item.age)),
+      item.position,
+      jsonb({ pace: item.rating, stamina: item.rating, decisions: item.rating, injuryProneness: 12 }),
+      item.rating,
+      item.potential_hidden,
+      calculateMarketValue({ age: Math.max(18, Number(item.age)), rating: item.rating, potential: item.potential_hidden }),
+      Math.round(Number(item.rating) * 750),
+      item.club_id,
+    ],
+  )
+  await pool.query("UPDATE youth_players SET status = 'promoted', updated_at = NOW() WHERE id = $1", [item.id])
+  res.status(201).json({ ok: true, player: player.rows[0] })
+})
+
 gameSystemsRouter.post("/leagues/:id/assets/naming-rights", async (req: AuthenticatedRequest, res: Response) => {
   const leagueId = routeParam(req.params.id)
   const userId = req.user?.id
@@ -266,6 +381,28 @@ gameSystemsRouter.post("/leagues/:id/assets/naming-rights", async (req: Authenti
     [club.id, leagueId, `${sponsor} Stadium`, upfront, jsonb({ sponsor, annualFee: Math.round(upfront / 5), years: 5 })],
   )
   await pool.query("UPDATE club_finances SET balance = balance + $2, updated_at = NOW() WHERE club_id = $1", [club.id, upfront])
+  res.status(201).json(result.rows[0])
+})
+
+gameSystemsRouter.post("/leagues/:id/assets/monetize", async (req: AuthenticatedRequest, res: Response) => {
+  const leagueId = routeParam(req.params.id)
+  const userId = req.user?.id
+  const club = userId ? await getManagedClub(leagueId, userId) : null
+  if (!club) {
+    res.status(404).json({ error: "Managed club not found" })
+    return
+  }
+  const type = ["future_tv_rights", "partial_sale", "training_ground_mortgage"].includes(req.body?.type)
+    ? req.body.type
+    : "future_tv_rights"
+  const valuation = Number(req.body?.valuation ?? 6_000_000)
+  const result = await pool.query(
+    `INSERT INTO assets (club_id, league_id, type, name, valuation, monetized, payload)
+     VALUES ($1, $2, $3, $4, $5, TRUE, $6)
+     RETURNING *`,
+    [club.id, leagueId, type, req.body?.name ?? type.replaceAll("_", " "), valuation, jsonb(req.body ?? {})],
+  )
+  await pool.query("UPDATE club_finances SET balance = balance + $2, updated_at = NOW() WHERE club_id = $1", [club.id, valuation])
   res.status(201).json(result.rows[0])
 })
 

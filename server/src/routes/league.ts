@@ -200,16 +200,30 @@ const clubProfiles: Record<string, { name: string; shortName: string }> = {
   harbor: { name: "Harbor City", shortName: "HBC" },
   dynamo: { name: "Capital Dynamo", shortName: "DYN" },
   rovers: { name: "Pacific Rovers", shortName: "PFR" },
+  northbridge: { name: "Northbridge Athletic", shortName: "NBA" },
+  valencia: { name: "Valencia Coast", shortName: "VLC" },
+  borough: { name: "Royal Borough", shortName: "RYB" },
+  olympic: { name: "Olympic United", shortName: "OLU" },
+  ironworks: { name: "Ironworks FC", shortName: "IRN" },
+  sierra: { name: "Sierra Union", shortName: "SIU" },
+  atlantic: { name: "Atlantic Sporting", shortName: "ATS" },
+  aurora: { name: "Aurora FC", shortName: "AUR" },
+  monarchs: { name: "City Monarchs", shortName: "MON" },
+  victoria: { name: "Victoria 1889", shortName: "VIC" },
+  riverside: { name: "Riverside Town", shortName: "RIV" },
+  alpine: { name: "Alpine Club", shortName: "ALP" },
+  desert: { name: "Desert Falcons", shortName: "DSF" },
+  celticbay: { name: "Celtic Bay", shortName: "CLB" },
+  frontera: { name: "Frontera Norte", shortName: "FRN" },
+  marina: { name: "Marina Azul", shortName: "MAZ" },
 }
 
 const clubKeys = Object.keys(clubProfiles)
 
-const botProfiles = [
-  { name: "Northbridge Athletic", shortName: "NBA" },
-  { name: "Valencia Coast", shortName: "VLC" },
-  { name: "Royal Borough", shortName: "RYB" },
-  { name: "Olympic United", shortName: "OLU" },
-]
+const botProfiles = Array.from({ length: 20 }, (_, index) => ({
+  name: `AI Manager Club ${String(index + 1).padStart(2, "0")}`,
+  shortName: `AI${String(index + 1).padStart(2, "0")}`,
+}))
 
 function jsonb(value: unknown): string {
   return JSON.stringify(value)
@@ -458,9 +472,22 @@ async function notifyLeagueMembers(
   }
 }
 
-async function createBotClubs(client: { query: typeof pool.query }, leagueId: string) {
-  const existing = await client.query<{ count: string }>("SELECT COUNT(*) AS count FROM clubs WHERE league_id = $1", [leagueId])
-  const remainingSlots = Math.max(0, 6 - Number(existing.rows[0]?.count ?? 0))
+function normalizeHumanManagers(value: unknown) {
+  return Math.min(20, Math.max(1, Number(value ?? 2)))
+}
+
+function normalizeTurnWindowHours(value: unknown) {
+  const hours = Number(value ?? 48)
+  return hours === 24 || hours === 48 || hours === 72 ? hours : 48
+}
+
+async function createBotClubs(client: { query: typeof pool.query }, leagueId: string, humanManagers = 2) {
+  const targetBotCount = Math.max(0, 20 - normalizeHumanManagers(humanManagers))
+  const existing = await client.query<{ count: string }>(
+    "SELECT COUNT(*) AS count FROM clubs WHERE league_id = $1 AND manager_user_id IS NULL",
+    [leagueId],
+  )
+  const remainingSlots = Math.max(0, targetBotCount - Number(existing.rows[0]?.count ?? 0))
   for (const profile of botProfiles.slice(0, remainingSlots)) {
     await client.query(
       `INSERT INTO clubs (league_id, manager_user_id, name, short_name, squad, tactics, finances)
@@ -866,6 +893,18 @@ leagueRouter.post("/leagues", async (req: AuthenticatedRequest, res: Response) =
   try {
     await client.query("BEGIN")
 
+    const humanManagers = normalizeHumanManagers(req.body?.humanManagers ?? (req.body?.settings as { humanManagers?: unknown } | undefined)?.humanManagers)
+    const turnWindowHours = normalizeTurnWindowHours(req.body?.turnWindowHours ?? (req.body?.settings as { turnWindowHours?: unknown } | undefined)?.turnWindowHours)
+    const budget = Number(req.body?.budget ?? 25_000_000)
+    const leagueSettings = {
+      ...(typeof req.body?.settings === "object" && req.body.settings ? req.body.settings : {}),
+      humanManagers,
+      botManagers: 20 - humanManagers,
+      turnWindowHours,
+      initialBudget: budget,
+      format: req.body?.format ?? "regular",
+      division: req.body?.division ?? "top",
+    }
     const leagueResult = await client.query<LeagueRow>(
       `INSERT INTO leagues (name, invite_code, commissioner_user_id, settings, current_matchday, status)
        VALUES ($1, $2, $3, $4, $5, $6)
@@ -874,7 +913,7 @@ leagueRouter.post("/leagues", async (req: AuthenticatedRequest, res: Response) =
         req.body?.name ?? "Cooperative League",
         req.body?.inviteCode ?? generateInviteCode(),
         userId,
-        req.body?.settings ?? {},
+        jsonb(leagueSettings),
         req.body?.currentMatchday ?? 1,
         "lobby",
       ],
@@ -886,7 +925,7 @@ leagueRouter.post("/leagues", async (req: AuthenticatedRequest, res: Response) =
        ON CONFLICT (league_id, user_id) DO NOTHING`,
       [league.id, userId, "commissioner"],
     )
-    const window = await ensureTransferWindow(client, league.id, Number(req.body?.budget ?? 25_000_000))
+    const window = await ensureTransferWindow(client, league.id, budget)
 
     const clubs = Array.isArray(req.body?.clubs) ? (req.body.clubs as ClubInput[]) : []
     const matches = Array.isArray(req.body?.matches) ? (req.body.matches as MatchInput[]) : []
@@ -903,7 +942,7 @@ leagueRouter.post("/leagues", async (req: AuthenticatedRequest, res: Response) =
               shortName: req.body?.clubShortName ?? userClubProfile.shortName,
               squad: [],
               tactics: {},
-              finances: {},
+              finances: { balance: 50_000_000, transferBudget: budget, weeklyWageBill: 650_000 },
             },
           ]
 
@@ -920,7 +959,7 @@ leagueRouter.post("/leagues", async (req: AuthenticatedRequest, res: Response) =
           club.shortName ?? club.short_name ?? "NEW",
           jsonb(club.squad ?? []),
           jsonb(club.tactics ?? {}),
-          jsonb(club.finances ?? {}),
+          jsonb({ balance: 50_000_000, transferBudget: budget, weeklyWageBill: 650_000, ...(club.finances ?? {}) }),
         ],
       )
       insertedClubs.push(clubResult.rows[0])
@@ -933,7 +972,7 @@ leagueRouter.post("/leagues", async (req: AuthenticatedRequest, res: Response) =
         insertedClubs[0].id,
       ])
     }
-    await createBotClubs(client, league.id)
+    await createBotClubs(client, league.id, humanManagers)
     const allClubs = await client.query<ClubRow>("SELECT * FROM clubs WHERE league_id = $1", [league.id])
     for (const club of allClubs.rows) {
       await ensureClubFinance(client, club)
@@ -1018,8 +1057,8 @@ leagueRouter.post("/leagues/join", async (req: AuthenticatedRequest, res: Respon
       userId,
       club.id,
     ])
-    await ensureTransferWindow(client, row.id)
-    await createBotClubs(client, row.id)
+    await ensureTransferWindow(client, row.id, Number((row.settings as { initialBudget?: unknown }).initialBudget ?? 25_000_000))
+    await createBotClubs(client, row.id, normalizeHumanManagers((row.settings as { humanManagers?: unknown }).humanManagers))
     const allClubs = await client.query<ClubRow>("SELECT * FROM clubs WHERE league_id = $1", [row.id])
     for (const item of allClubs.rows) {
       await ensureClubFinance(client, item)
@@ -1088,6 +1127,33 @@ leagueRouter.get("/leagues/:id/clubs/availability", async (req: AuthenticatedReq
      LEFT JOIN users u ON u.id = c.manager_user_id
      WHERE c.league_id = $1`,
     [leagueId],
+  )
+  const assignedByName = new Map(assigned.rows.map((row) => [row.name, row.manager]))
+
+  res.json(
+    clubKeys.map((key) => ({
+      id: key,
+      ...clubProfiles[key],
+      taken: assignedByName.has(clubProfiles[key].name),
+      managerName: assignedByName.get(clubProfiles[key].name) ?? null,
+    })),
+  )
+})
+
+leagueRouter.get("/leagues/invite/:code/clubs/availability", async (req: AuthenticatedRequest, res: Response) => {
+  const inviteCode = routeParam(req.params.code).trim().toUpperCase()
+  const league = await pool.query<LeagueRow>("SELECT * FROM leagues WHERE invite_code = $1", [inviteCode])
+  if (!league.rows[0]) {
+    res.status(404).json({ error: "League not found for invite code" })
+    return
+  }
+
+  const assigned = await pool.query<{ name: string; manager: string | null }>(
+    `SELECT c.name, u.display_name AS manager
+     FROM clubs c
+     LEFT JOIN users u ON u.id = c.manager_user_id
+     WHERE c.league_id = $1 AND c.manager_user_id IS NOT NULL`,
+    [league.rows[0].id],
   )
   const assignedByName = new Map(assigned.rows.map((row) => [row.name, row.manager]))
 

@@ -197,6 +197,8 @@ describe("Pitch Perfect production API", () => {
     expect(players.length).toBe(25)
     expect(players[0].attributes).toBeTruthy()
     expect(players[0].market_value).toBeGreaterThan(0)
+    const playerDetail = await api(`/players/${players[0].id}`, { token: userA.token })
+    expect(playerDetail.scouting.highLevel).toContain("potential_hidden")
 
     const generated = await api(`/leagues/${leagueId}/players/generate`, { method: "POST", token: userA.token })
     expect(generated.count).toBeGreaterThanOrEqual(100)
@@ -219,6 +221,8 @@ describe("Pitch Perfect production API", () => {
       body: JSON.stringify({ academyLevel: 5, count: 8 }),
     })
     expect(youth.youthPlayers.length).toBeGreaterThanOrEqual(5)
+    const promoted = await api(`/youth/${youth.youthPlayers[0].id}/promote`, { method: "POST", token: userA.token })
+    expect(promoted.player.club_id).toBeTruthy()
 
     const loan = await api(`/leagues/${leagueId}/loans`, {
       method: "POST",
@@ -233,6 +237,18 @@ describe("Pitch Perfect production API", () => {
       body: JSON.stringify({ sponsor: "Emirates", upfront: 8000000 }),
     })
     expect(asset.monetized).toBe(true)
+    const monetized = await api(`/leagues/${leagueId}/assets/monetize`, {
+      method: "POST",
+      token: userA.token,
+      body: JSON.stringify({ type: "future_tv_rights", valuation: 4000000 }),
+    })
+    expect(monetized.type).toBe("future_tv_rights")
+    const watchlist = await api(`/leagues/${leagueId}/watchlist`, {
+      method: "POST",
+      token: userA.token,
+      body: JSON.stringify({ playerId: players[0].id, targetPrice: players[0].market_value - 1000000 }),
+    })
+    expect(watchlist.alert_enabled).toBe(true)
 
     const week = await api(`/leagues/${leagueId}/simulate-week`, {
       method: "POST",
@@ -246,5 +262,32 @@ describe("Pitch Perfect production API", () => {
     const ffp = await api(`/leagues/${leagueId}/ffp`, { token: userA.token })
     expect(["1:1", "1:4"]).toContain(ffp.rule)
     expect(ffp.levers).toContain("naming_rights")
+  })
+
+  test("v6 configuración de liga: humanos, bots, presupuesto, turn window y disponibilidad", async () => {
+    const owner = await registerUser("qa-owner", "metropolis", `${stamp}-v6`)
+    const configured = await api("/leagues", {
+      method: "POST",
+      token: owner.token,
+      body: JSON.stringify({
+        name: `Configured League ${stamp}`,
+        clubId: "metropolis",
+        humanManagers: 5,
+        budget: 42000000,
+        turnWindowHours: 72,
+      }),
+    })
+    const full = await api(`/leagues/${configured.id}`, { token: owner.token })
+    expect(full.settings.humanManagers).toBe(5)
+    expect(full.settings.botManagers).toBe(15)
+    expect(full.settings.turnWindowHours).toBe(72)
+    expect(full.transferWindow.budget).toBe(42000000)
+    expect(full.clubs.filter((club) => club.managerUserId === null)).toHaveLength(15)
+    const availability = await api(`/leagues/invite/${configured.inviteCode}/clubs/availability`, { token: owner.token })
+    const metropolis = availability.find((club) => club.id === "metropolis")
+    const harbor = availability.find((club) => club.id === "harbor")
+    expect(metropolis.taken).toBe(true)
+    expect(metropolis.managerName).toBeTruthy()
+    expect(harbor.taken).toBe(false)
   })
 })
