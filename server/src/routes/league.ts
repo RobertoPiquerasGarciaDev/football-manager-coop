@@ -1,6 +1,10 @@
 import { Router, type Request, type Response } from "express"
 import type { AuthenticatedRequest } from "../auth"
 import { pool } from "../db/pool"
+import { logger } from "../lib/logger"
+import { simulateMatch, deriveClubRating, type ClubProfile, type TacticInstructions } from "../lib/simulator"
+import { botPersonality, botTacticalSetup } from "../lib/bot-ai"
+import { computeWeeklyFinance } from "../lib/finance"
 
 type LeagueRow = {
   id: string
@@ -564,51 +568,52 @@ async function ensureClubFinance(client: { query: typeof pool.query }, club: Clu
   return result.rows[0]
 }
 
-async function applyWeeklyFinance(client: { query: typeof pool.query }, leagueId: string, matchday: number, standings: StandingRow[]) {
+async function applyWeeklyFinance(
+  client: { query: typeof pool.query },
+  leagueId: string,
+  matchday: number,
+  standings: StandingRow[],
+  recentResults: Map<string, { wonLast: boolean; recentWins: number }>,
+) {
   const clubs = await client.query<ClubRow>("SELECT * FROM clubs WHERE league_id = $1", [leagueId])
   const byClubId = new Map(standings.map((row, index) => [row.clubId, { ...row, position: index + 1 }]))
 
   for (const club of clubs.rows) {
     const finance = await ensureClubFinance(client, club)
     const standing = byClubId.get(club.id)
-    const positionFactor = standing ? Math.max(0.72, 1.18 - (standing.position - 1) * 0.035) : 0.9
+    const last = recentResults.get(club.id) ?? { wonLast: false, recentWins: 0 }
     const stadiumCapacity = Number((club.finances as { stadiumCapacity?: number }).stadiumCapacity ?? 42_000)
     const ticketPrice = Number((club.finances as { ticketPrice?: number }).ticketPrice ?? 42)
-    const occupancy = Math.min(0.98, Math.max(0.48, 0.62 * positionFactor))
-    const tickets = Math.round(stadiumCapacity * occupancy * ticketPrice)
-    const tvRights = Math.round(650_000 + (standing ? Math.max(0, 7 - standing.position) * 45_000 : 0))
-    const sponsors = 180_000
-    const prizeMoney = standing && standing.position <= 3 ? 75_000 : 0
-    const playerSales = 0
-    const weeklyIncome = tickets + tvRights + sponsors + prizeMoney + playerSales
-    const staffWages = 130_000
-    const amortization = Math.round(finance.transfer_budget / 260)
-    const facilities = 95_000
-    const performanceBonuses = standing && standing.won > 0 ? 55_000 : 20_000
-    const weeklyExpenses = finance.weekly_wage_bill + staffWages + amortization + facilities + performanceBonuses
-    const interest = finance.long_term_debt > 0 ? Math.round(finance.long_term_debt * 0.0015) : 0
-    const net = weeklyIncome - weeklyExpenses - interest
-    const nextDebt = net < 0 && finance.balance + net < 0 ? finance.long_term_debt + Math.abs(finance.balance + net) : finance.long_term_debt
-    const nextBalance = Math.max(-25_000_000, finance.balance + net)
-    const wageRatio = weeklyIncome > 0 ? finance.weekly_wage_bill / weeklyIncome : 1
-    const ffpStatus = wageRatio > 0.85 ? "transfer_restricted" : wageRatio > 0.7 ? "warning" : nextDebt > finance.annual_income_projection * 3 ? "administration" : "compliant"
-    const bankrupt = nextBalance <= -20_000_000 || ffpStatus === "administration"
-    const projection = Array.from({ length: 12 }, (_, week) => ({
-      week: week + 1,
-      projectedBalance: nextBalance + net * week,
-      projectedDebt: nextDebt,
-    }))
-    const alerts = [
-      ...(wageRatio > 0.7 ? [`Wage bill is ${Math.round(wageRatio * 100)}% of weekly income`] : []),
-      ...(bankrupt ? ["Club is at bankruptcy risk"] : []),
-    ]
+    const stadiumLevel = Number((club.finances as { stadiumLevel?: number }).stadiumLevel ?? 3)
+
+    const result = computeWeeklyFinance(finance.balance, {
+      position: standing?.position ?? 10,
+      totalClubs: standings.length || 20,
+      recentWins: last.recentWins,
+      stadiumCapacity,
+      ticketPrice,
+      stadiumLevel,
+      weeklyWageBill: finance.weekly_wage_bill,
+      transferBudget: finance.transfer_budget,
+      longTermDebt: finance.long_term_debt,
+      wonLast: last.wonLast,
+      annualIncomeProjection: finance.annual_income_projection,
+    })
 
     await client.query(
       `UPDATE club_finances
        SET balance = $2, long_term_debt = $3, ffp_status = $4, bankrupt = $5,
            annual_income_projection = $6, projection = $7, updated_at = NOW()
        WHERE club_id = $1`,
-      [club.id, nextBalance, nextDebt, ffpStatus, bankrupt, weeklyIncome * 52, jsonb(projection)],
+      [
+        club.id,
+        result.nextBalance,
+        result.nextDebt,
+        result.ffpStatus,
+        result.bankrupt,
+        result.income.total * 52,
+        jsonb(result.projection),
+      ],
     )
     await client.query(
       `INSERT INTO financial_events (club_id, league_id, matchday, income, expenses, net_result, balance_after, alerts)
@@ -617,11 +622,11 @@ async function applyWeeklyFinance(client: { query: typeof pool.query }, leagueId
         club.id,
         leagueId,
         matchday,
-        jsonb({ tickets, tvRights, sponsors, prizeMoney, playerSales }),
-        jsonb({ wages: finance.weekly_wage_bill, staffWages, amortization, facilities, performanceBonuses, interest }),
-        net,
-        nextBalance,
-        jsonb(alerts),
+        jsonb(result.income),
+        jsonb(result.expenses),
+        result.net,
+        result.nextBalance,
+        jsonb(result.alerts),
       ],
     )
   }
@@ -647,10 +652,6 @@ async function getTurnStatus(leagueId: string, matchday: number): Promise<TurnSt
   }
 }
 
-function scoreFor(seed: string): number {
-  return Array.from(seed).reduce((sum, char) => sum + char.charCodeAt(0), 0) % 4
-}
-
 async function ensureBotTurns(client: { query: typeof pool.query }, leagueId: string, matchday: number) {
   const bots = await client.query<ClubRow>(
     `SELECT c.*
@@ -662,9 +663,26 @@ async function ensureBotTurns(client: { query: typeof pool.query }, leagueId: st
     [leagueId],
   )
 
+  // Find each bot's next opponent so the bot can react tactically
+  const fixtures = await client.query<MatchRow>(
+    "SELECT * FROM matches WHERE league_id = $1 AND matchday = $2",
+    [leagueId, matchday],
+  )
+  const opponentByClub = new Map<string, string>()
+  for (const m of fixtures.rows) {
+    opponentByClub.set(m.home_club_id, m.away_club_id)
+    opponentByClub.set(m.away_club_id, m.home_club_id)
+  }
+
   for (const bot of bots.rows) {
-    const lineup = Array.from({ length: 11 }, (_, index) => `BOT-${bot.short_name}-${index + 1}`)
-    const tactics = { ...(bot.tactics ?? {}), formation: (bot.tactics as { formation?: string })?.formation ?? "4-4-2", ai: true }
+    const personality = botPersonality(bot.id)
+    const myRating = deriveClubRating(bot.id)
+    const oppId = opponentByClub.get(bot.id)
+    const oppRating = oppId ? deriveClubRating(oppId) : undefined
+    const setup = botTacticalSetup(personality, oppRating, myRating)
+    const lineup = Array.from({ length: 11 }, (_, index) => `${bot.short_name} Bot ${index + 1}`)
+    const tactics = { ...setup.tactics, ai: true, personality, note: setup.lineupNote }
+
     await client.query(
       `INSERT INTO tactic_drafts (league_id, club_id, user_id, matchday, lineup, tactics)
        VALUES ($1, $2, NULL, $3, $4, $5)
@@ -678,6 +696,66 @@ async function ensureBotTurns(client: { query: typeof pool.query }, leagueId: st
        ON CONFLICT (league_id, club_id, matchday) DO NOTHING`,
       [leagueId, bot.id, matchday, jsonb(lineup), jsonb(tactics)],
     )
+  }
+}
+
+/**
+ * Build a `ClubProfile` for the simulator using stored tactics and form data.
+ * Falls back to deterministic values when no historical data is present.
+ */
+async function buildSimClubProfile(
+  client: { query: typeof pool.query },
+  club: ClubRow,
+  tacticsByClub: Map<string, TacticInstructions>,
+): Promise<ClubProfile> {
+  // Form: derived from last 5 matches (wins boost form)
+  const last5 = await client.query<{ won: boolean; matchday: number }>(
+    `SELECT CASE
+        WHEN home_club_id = $1 AND home_score > away_score THEN TRUE
+        WHEN away_club_id = $1 AND away_score > home_score THEN TRUE
+        ELSE FALSE
+      END AS won
+     FROM matches
+     WHERE league_id = $2 AND status IN ('played','finished')
+       AND (home_club_id = $1 OR away_club_id = $1)
+     ORDER BY matchday DESC LIMIT 5`,
+    [club.id, club.league_id],
+  )
+  const wins = last5.rows.filter((r) => r.won).length
+  const formScore = Math.min(95, 50 + wins * 8)
+
+  // Staff bonuses derived from staff_members table when present
+  const staffRows = await client.query<{ role: string; level: number }>(
+    "SELECT role, level FROM staff_members WHERE club_id = $1",
+    [club.id],
+  )
+  const staffMap = new Map<string, number>()
+  for (const s of staffRows.rows) staffMap.set(s.role, Math.max(staffMap.get(s.role) ?? 0, s.level))
+  const staffBonus = (role: string) => Math.max(0, (staffMap.get(role) ?? 0) - 2.5) / 2.5 // level 1-5 → -0.6..+1
+
+  const tactics = tacticsByClub.get(club.id) ?? (club.tactics as TacticInstructions) ?? { formation: "4-4-2" }
+  const isBot = !club.manager_user_id
+  const personality: ClubProfile["personality"] = isBot ? botPersonality(club.id) : "human"
+
+  return {
+    id: club.id,
+    name: club.name,
+    shortName: club.short_name,
+    rating: deriveClubRating(club.id),
+    form: formScore,
+    morale: 65,
+    fatigue: Math.min(80, last5.rows.length * 8),
+    homeBoost: 50,
+    tactics,
+    staff: {
+      physical: staffBonus("preparador_fisico"),
+      medic: staffBonus("medico"),
+      analyst: staffBonus("analista_tactico"),
+      setPiece: staffBonus("entrenador_balon_parado"),
+      gkCoach: staffBonus("entrenador_porteros"),
+    },
+    personality,
+    analystApplied: (tactics as { analystApplied?: boolean }).analystApplied === true,
   }
 }
 
@@ -803,12 +881,42 @@ async function advanceLeagueIfReady(league: LeagueRow, matchday: number) {
       return { advanced: false, turnStatus: status }
     }
 
-    await ensureBotTurns(client, league.id, matchday)
     const matches = await ensureMatchdayMatches(client, league.id, matchday)
+    await ensureBotTurns(client, league.id, matchday)
+
+    // Pull all clubs once + the committed tactics for this matchday
+    const clubsResult = await client.query<ClubRow>("SELECT * FROM clubs WHERE league_id = $1", [league.id])
+    const clubById = new Map(clubsResult.rows.map((c) => [c.id, c]))
+    const turnsResult = await client.query<TurnRow>(
+      "SELECT * FROM turns WHERE league_id = $1 AND matchday = $2",
+      [league.id, matchday],
+    )
+    const draftsResult = await client.query<TacticDraftRow>(
+      "SELECT * FROM tactic_drafts WHERE league_id = $1 AND matchday = $2",
+      [league.id, matchday],
+    )
+    const tacticsByClub = new Map<string, TacticInstructions>()
+    for (const d of draftsResult.rows) {
+      tacticsByClub.set(d.club_id, (d.tactics as TacticInstructions) ?? {})
+    }
+    for (const t of turnsResult.rows) {
+      // turn tactics override drafts because they were the ones submitted
+      tacticsByClub.set(t.club_id, (t.tactics as TacticInstructions) ?? tacticsByClub.get(t.club_id) ?? {})
+    }
+
     const finishedMatches: MatchRow[] = []
+    const wonClubs = new Map<string, boolean>()
     for (const match of matches) {
-      const homeScore = scoreFor(`${match.home_club_id}:${matchday}:home`)
-      const awayScore = scoreFor(`${match.away_club_id}:${matchday}:away`)
+      const home = clubById.get(match.home_club_id)
+      const away = clubById.get(match.away_club_id)
+      if (!home || !away) continue
+      const homeProfile = await buildSimClubProfile(client, home, tacticsByClub)
+      const awayProfile = await buildSimClubProfile(client, away, tacticsByClub)
+      const sim = simulateMatch(homeProfile, awayProfile, `${league.id}:${match.id}:${matchday}`)
+
+      wonClubs.set(match.home_club_id, sim.homeScore > sim.awayScore)
+      wonClubs.set(match.away_club_id, sim.awayScore > sim.homeScore)
+
       const result = await client.query<MatchRow>(
         `UPDATE matches
          SET status = 'played', home_score = $1, away_score = $2, played_at = NOW(),
@@ -816,20 +924,49 @@ async function advanceLeagueIfReady(league: LeagueRow, matchday: number) {
          WHERE id = $4
          RETURNING *`,
         [
-          homeScore,
-          awayScore,
-          jsonb([
-            { minute: 12, type: "key_chance", description: "Opening pressure from the home side" },
-            ...(homeScore + awayScore > 0 ? [{ minute: 54, type: "goal", description: "Decisive cooperative turn goal" }] : []),
-          ]),
+          sim.homeScore,
+          sim.awayScore,
+          jsonb({
+            timeline: sim.events,
+            mvp: sim.mvp,
+            xg: { home: sim.homeXg, away: sim.awayXg },
+            ratings: { home: sim.homeRating, away: sim.awayRating },
+          }),
           match.id,
         ],
       )
       finishedMatches.push(result.rows[0])
+      logger.info("[sim] match played", {
+        leagueId: league.id,
+        matchday,
+        home: home.short_name,
+        away: away.short_name,
+        score: `${sim.homeScore}-${sim.awayScore}`,
+      })
     }
 
     const standings = await recalculateStandings(client, league.id)
-    await applyWeeklyFinance(client, league.id, matchday, standings)
+
+    // Build recent results lookup for finance calibration
+    const recentResults = new Map<string, { wonLast: boolean; recentWins: number }>()
+    for (const club of clubsResult.rows) {
+      const last5 = await client.query<{ won: boolean }>(
+        `SELECT CASE
+            WHEN home_club_id = $1 AND home_score > away_score THEN TRUE
+            WHEN away_club_id = $1 AND away_score > home_score THEN TRUE
+            ELSE FALSE END AS won
+         FROM matches
+         WHERE league_id = $2 AND status IN ('played','finished')
+           AND (home_club_id = $1 OR away_club_id = $1)
+         ORDER BY matchday DESC LIMIT 5`,
+        [club.id, league.id],
+      )
+      recentResults.set(club.id, {
+        wonLast: wonClubs.get(club.id) ?? false,
+        recentWins: last5.rows.filter((r) => r.won).length,
+      })
+    }
+    await applyWeeklyFinance(client, league.id, matchday, standings, recentResults)
     const nextMatchday = matchday + 1
     const nextStatus = nextMatchday === 19 ? "winter_market" : "active"
     const nextPhase = nextMatchday === 19 ? "winter_market" : "season"
@@ -865,11 +1002,11 @@ async function advanceLeagueIfReady(league: LeagueRow, matchday: number) {
       })
     }
     await client.query("COMMIT")
-    console.log("[coop] matchday advanced", { leagueId: league.id, matchday, nextMatchday })
+    logger.info("matchday advanced", { leagueId: league.id, matchday, nextMatchday })
     return { advanced: true, turnStatus: status }
   } catch (error) {
     await client.query("ROLLBACK")
-    console.error("[coop] failed to advance matchday", { leagueId: league.id, matchday, error })
+    logger.error("failed to advance matchday", { leagueId: league.id, matchday, error: String(error) })
     throw error
   } finally {
     client.release()
@@ -1023,6 +1160,7 @@ leagueRouter.post("/leagues", async (req: AuthenticatedRequest, res: Response) =
     res.status(201).json({ ...mapLeague(league), clubs: insertedClubs.map(mapClub), matches, transferWindow: mapTransferWindow(window) })
   } catch (error) {
     await client.query("ROLLBACK")
+    logger.error("failed to create league", { userId, error: String(error) })
     res.status(500).json({ error: "Failed to create league" })
   } finally {
     client.release()
@@ -1080,7 +1218,7 @@ leagueRouter.post("/leagues/join", async (req: AuthenticatedRequest, res: Respon
     await client.query("COMMIT")
   } catch (error) {
     await client.query("ROLLBACK")
-    console.error("[coop] failed to create joined manager club", { leagueId: row.id, userId, error })
+    logger.error("failed to create joined manager club", { leagueId: row.id, userId, error: String(error) })
       res.status(500).json({ error: error instanceof Error ? error.message : "Failed to assign club to user" })
     return
   } finally {
@@ -1243,7 +1381,7 @@ async function handleReady(req: AuthenticatedRequest, res: Response) {
     res.json({ ok: true, status, transferWindow: mapTransferWindow(updated.rows[0]), readyCount, total })
   } catch (error) {
     await client.query("ROLLBACK")
-    console.error("[coop] failed to mark ready", { leagueId: league.id, userId, error })
+    logger.error("failed to mark ready", { leagueId: league.id, userId, error: String(error) })
     res.status(500).json({ error: "Failed to mark manager ready" })
   } finally {
     client.release()
@@ -1365,7 +1503,7 @@ leagueRouter.post("/leagues/:id/transfers", async (req: AuthenticatedRequest, re
     res.status(201).json({ ok: true, transfer: transfer.rows[0] })
   } catch (error) {
     await client.query("ROLLBACK")
-    console.error("[coop] failed to create transfer", { leagueId: league.id, userId, error })
+    logger.error("failed to create transfer", { leagueId: league.id, userId, error: String(error) })
     res.status(500).json({ error: "Failed to create transfer" })
   } finally {
     client.release()
@@ -1495,7 +1633,7 @@ leagueRouter.post("/leagues/:id/transfer-offers", async (req: AuthenticatedReque
     res.status(201).json(mapTransferOffer(result.rows[0]))
   } catch (error) {
     await client.query("ROLLBACK")
-    console.error("[market] failed to create offer", { leagueId: league.id, error })
+    logger.error("failed to create offer", { leagueId: league.id, error: String(error) })
     res.status(500).json({ error: "Failed to create transfer offer" })
   } finally {
     client.release()
@@ -1573,7 +1711,7 @@ leagueRouter.post("/leagues/:id/simulate-matchday", async (req: AuthenticatedReq
     const updatedLeague = await getLeagueById(league.id)
     res.json({ ok: true, ...result, league: updatedLeague ? mapLeague(updatedLeague) : null, standings: await getStandings(league.id) })
   } catch (error) {
-    console.error("[coop] manual simulate failed", { leagueId: league.id, error })
+    logger.error("manual simulate failed", { leagueId: league.id, error: String(error) })
     res.status(500).json({ error: "Failed to simulate matchday" })
   }
 })
@@ -1588,35 +1726,55 @@ leagueRouter.post("/leagues/:id/tactics", async (req: AuthenticatedRequest, res:
     res.status(401).json({ error: "Authentication required" })
     return
   }
-  if (!req.body?.clubId) {
-    res.status(400).json({ error: "clubId is required" })
+
+  // Auto-resolve clubId if the caller didn't pass one — saves a round trip and
+  // lets the autosave fire even when the UI didn't hydrate the club yet.
+  let clubId: string | undefined = req.body?.clubId
+  if (!clubId) {
+    const owned = await pool.query<ClubRow>(
+      "SELECT * FROM clubs WHERE league_id = $1 AND manager_user_id = $2",
+      [league.id, req.user.id],
+    )
+    clubId = owned.rows[0]?.id
+  }
+  if (!clubId) {
+    res.status(400).json({ error: "clubId is required (no club is owned by this user in this league)" })
     return
   }
 
+  // L-1: tactic drafts can be saved in ANY phase (lobby, summer_market,
+  // winter_market, active). The simulator only uses them when status=active.
   const matchday = req.body.matchday ?? league.current_matchday
   const club = await pool.query<ClubRow>(
     "SELECT * FROM clubs WHERE id = $1 AND league_id = $2 AND manager_user_id = $3",
-    [req.body.clubId, league.id, req.user.id],
+    [clubId, league.id, req.user.id],
   )
   if (!club.rows[0]) {
     res.status(403).json({ error: "You can only save tactics for your assigned club" })
     return
   }
   const submitted = await pool.query<TurnRow>(
-    "SELECT * FROM turns WHERE league_id = $1 AND club_id = $2 AND matchday = $3",
-    [league.id, req.body.clubId, matchday],
+    "SELECT * FROM turns WHERE league_id = $1 AND club_id = $2 AND matchday = $3 AND user_id IS NOT NULL",
+    [league.id, clubId, matchday],
   )
   if (submitted.rows[0]) {
     res.status(409).json({ error: "Turn already submitted for this matchday; tactics are locked" })
     return
   }
+  // Provide reasonable defaults so the autosave can fire with partial data
+  const lineup = Array.isArray(req.body?.lineup) && req.body.lineup.length > 0
+    ? req.body.lineup
+    : Array.from({ length: 11 }, (_, i) => `Titular ${i + 1}`)
+  const tactics = req.body?.tactics && typeof req.body.tactics === "object"
+    ? req.body.tactics
+    : { formation: req.body?.formation ?? "4-3-3" }
 
   const client = await pool.connect()
   try {
     await client.query("BEGIN")
     await client.query("UPDATE clubs SET tactics = $2, updated_at = NOW() WHERE id = $1", [
-      req.body.clubId,
-      jsonb(req.body.tactics),
+      clubId,
+      jsonb(tactics),
     ])
     const result = await client.query<TacticDraftRow>(
       `INSERT INTO tactic_drafts (league_id, club_id, user_id, matchday, lineup, tactics)
@@ -1625,18 +1783,18 @@ leagueRouter.post("/leagues/:id/tactics", async (req: AuthenticatedRequest, res:
        DO UPDATE SET user_id = EXCLUDED.user_id, lineup = EXCLUDED.lineup,
          tactics = EXCLUDED.tactics, updated_at = NOW()
        RETURNING *`,
-      [league.id, req.body.clubId, req.user.id, matchday, jsonb(req.body.lineup), jsonb(req.body.tactics)],
+      [league.id, clubId, req.user.id, matchday, jsonb(lineup), jsonb(tactics)],
     )
     await client.query(
       `INSERT INTO league_events (league_id, type, payload)
        VALUES ($1, 'tactics_saved', $2)`,
-      [league.id, jsonb({ matchday, clubId: req.body.clubId, userId: req.user.id })],
+      [league.id, jsonb({ matchday, clubId, userId: req.user.id, phase: league.status })],
     )
     await client.query("COMMIT")
     res.json({ ok: true, draft: mapTacticDraft(result.rows[0]), turnStatus: await getTurnStatus(league.id, matchday) })
   } catch (error) {
     await client.query("ROLLBACK")
-    console.error("[coop] failed to save tactics", { leagueId: league.id, userId: req.user.id, error })
+    logger.error("[coop] failed to save tactics", { leagueId: league.id, userId: req.user.id, error: String(error) })
     res.status(500).json({ error: "Failed to save tactics" })
   } finally {
     client.release()
@@ -1724,7 +1882,7 @@ leagueRouter.post("/leagues/:id/turn", async (req: AuthenticatedRequest, res: Re
       return
     }
 
-    console.log("[coop] submitting turn", { leagueId: league.id, matchday, userId: req.user.id, clubId: req.body.clubId })
+    logger.info("submitting turn", { leagueId: league.id, matchday, userId: req.user.id, clubId: req.body.clubId })
     const turnResult = await pool.query<TurnRow>(
       `INSERT INTO turns (league_id, club_id, user_id, matchday, lineup, tactics)
        VALUES ($1, $2, $3, $4, $5, $6)
@@ -1732,11 +1890,11 @@ leagueRouter.post("/leagues/:id/turn", async (req: AuthenticatedRequest, res: Re
       [league.id, req.body.clubId, req.user.id, matchday, jsonb(lineup), jsonb(tactics)],
     )
     const { advanced, turnStatus } = await advanceLeagueIfReady(league, matchday)
-    console.log("[coop] turn submitted", { leagueId: league.id, matchday, advanced, turnStatus })
+    logger.info("turn submitted", { leagueId: league.id, matchday, advanced, turnStatus })
 
     res.status(201).json({ ok: true, turn: mapTurn(turnResult.rows[0]), turnStatus, advanced })
   } catch (error) {
-    console.error("Failed to submit turn", error)
+    logger.error("Failed to submit turn", { error: String(error) })
     res.status(500).json({ error: "Failed to submit turn" })
   }
 })

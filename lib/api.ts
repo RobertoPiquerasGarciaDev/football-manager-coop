@@ -29,10 +29,21 @@ export type LeagueResponse = {
   clubs?: ClubResponse[]
   matches?: unknown[]
   turns?: unknown[]
-  tacticDrafts?: unknown[]
+  tacticDrafts?: TacticDraftResponse[]
   standings?: StandingRow[]
   turnStatus?: TurnStatus
   transferWindow?: TransferWindow | null
+}
+
+export type TacticDraftResponse = {
+  id: string
+  leagueId: string
+  clubId: string
+  userId: string | null
+  matchday: number
+  lineup: unknown[]
+  tactics: Record<string, unknown>
+  updatedAt: string
 }
 
 export type ClubResponse = {

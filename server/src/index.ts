@@ -4,6 +4,7 @@ import express from "express"
 import type { NextFunction, Request, Response } from "express"
 import { authMiddleware } from "./auth"
 import { runMigrations } from "./db/migrations"
+import { logger } from "./lib/logger"
 import { authRouter } from "./routes/auth"
 import { gameSystemsRouter } from "./routes/game-systems"
 import { leagueRouter } from "./routes/league"
@@ -48,18 +49,29 @@ app.get("/health", (_req, res) => {
 app.use(authRouter)
 app.use(authMiddleware, leagueRouter)
 app.use(authMiddleware, gameSystemsRouter)
-app.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
-  console.error("Unhandled API error", error)
+app.use((error: Error, req: Request, res: Response, _next: NextFunction) => {
+  logger.error("Unhandled API error", {
+    method: req.method,
+    path: req.originalUrl,
+    error: error.message,
+    stack: error.stack,
+  })
   res.status(500).json({ error: "Internal server error" })
+})
+
+// Request logging middleware (mounted last so it captures the full chain)
+app.use((req, _res, next) => {
+  logger.debug("request", { method: req.method, path: req.originalUrl })
+  next()
 })
 
 runMigrations()
   .then(() => {
     app.listen(port, () => {
-      console.log(`Football Manager API listening on http://localhost:${port}`)
+      logger.info("API listening", { port, url: `http://localhost:${port}` })
     })
   })
   .catch((error) => {
-    console.error("Failed to run database migrations", error)
+    logger.error("Failed to run database migrations", { error: String(error) })
     process.exit(1)
   })

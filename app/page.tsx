@@ -1,5 +1,8 @@
 import Dashboard from "@/components/dashboard"
 
-export default function Home() {
-  return <Dashboard />
+type Search = { tab?: string }
+
+export default async function Home({ searchParams }: { searchParams: Promise<Search> }) {
+  const { tab } = await searchParams
+  return <Dashboard initialTab={tab} />
 }

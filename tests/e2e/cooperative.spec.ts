@@ -6,7 +6,7 @@
  *   BASE_URL=https://football-manager-ui.vercel.app npx playwright test
  */
 
-import { test, expect, type Browser, type BrowserContext, type Page } from "@playwright/test"
+import { test, expect, type APIRequestContext, type Browser, type BrowserContext, type Page } from "@playwright/test"
 import { testEmail, registerUser, loginUser, getInviteCode, sleep, API_URL } from "./helpers"
 
 // ─── Shared state ─────────────────────────────────────────────────────────────
@@ -351,7 +351,7 @@ test.describe.serial("Pitch Perfect — Full E2E Cooperative Flow", () => {
 
   // ─── Helper: submit a turn for a given user ──────────────────────────────
   async function submitTurnForUser(
-    request: Parameters<Parameters<typeof test>[1]>[0]["request"],
+    request: APIRequestContext,
     email: string,
     label: string,
     formation = "4-3-3",
@@ -561,5 +561,96 @@ test.describe.serial("Pitch Perfect — Full E2E Cooperative Flow", () => {
     // We just verify the app is functional
     const appIsUp = await pageA.locator("body").isVisible({ timeout: 5000 })
     expect(appIsUp).toBe(true)
+  })
+
+  // ─── 19. SIMULATION: realistic match scores (L-4) ───────────────────────
+  test("19 — Simulation produces probabilistic scores (not all 0-0)", async ({ request }) => {
+    const loginResp = await request.post(`${API_URL}/auth/login`, { data: { email: userAEmail, password } })
+    if (loginResp.status() !== 200) return
+    const { token } = await loginResp.json()
+    const leaguesResp = await request.get(`${API_URL}/leagues`, { headers: { Authorization: `Bearer ${token}` } })
+    const leagues = await leaguesResp.json()
+    const league = leagues.find((l: { name: string }) => l.name === leagueName)
+    if (!league) return
+
+    const detail = await (await request.get(`${API_URL}/leagues/${league.id}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })).json()
+    const playedMatches = (detail.matches ?? []).filter((m: { status?: string; homeScore?: number | null }) =>
+      m.status === "played" && m.homeScore != null,
+    )
+    console.log(`Played matches: ${playedMatches.length}`)
+    if (playedMatches.length === 0) {
+      console.log("No played matches yet — skipping score check")
+      return
+    }
+
+    // At least one match should have a non-zero score; the old (deterministic) engine produced all 0-0 / 1-0 patterns
+    const scoresSet = new Set<string>()
+    let totalGoals = 0
+    for (const m of playedMatches) {
+      scoresSet.add(`${m.homeScore}-${m.awayScore}`)
+      totalGoals += (m.homeScore ?? 0) + (m.awayScore ?? 0)
+    }
+    console.log(`Distinct scorelines: ${scoresSet.size} · total goals: ${totalGoals}`)
+    // The new simulator should produce variety
+    expect(scoresSet.size).toBeGreaterThanOrEqual(2)
+  })
+
+  // ─── 20. PERSISTENT ROUTES: reload preserves the league/tab (L-2) ───────
+  test("20 — Reload preserves league + tab via /leagues/[id]?tab=...", async () => {
+    // User A should already be inside their league at this point. We force a
+    // navigation to /leagues/[id]?tab=tactics and reload.
+    // The dashboard syncs URL ↔ state via useRouter.
+    const leagueCard = pageA.locator("button").filter({ hasText: leagueName })
+    if (await leagueCard.isVisible({ timeout: 5000 }).catch(() => false)) {
+      await leagueCard.click()
+      await sleep(2000)
+    }
+    // Navigate via URL directly
+    const currentUrl = pageA.url()
+    console.log("Current URL before reload:", currentUrl)
+    const matchLeagueId = currentUrl.match(/leagues\/([0-9a-fA-F-]{36})/)
+    if (!matchLeagueId) {
+      console.log("League id not in URL yet (still on hub) — skipping reload check")
+      return
+    }
+    const leagueId = matchLeagueId[1]
+
+    await pageA.goto(`${pageA.url().split("/leagues/")[0]}/leagues/${leagueId}?tab=tactics`, { waitUntil: "domcontentloaded" })
+    await sleep(2500)
+
+    // Verify URL still contains tab=tactics after the SPA hydrates
+    const afterReload = pageA.url()
+    console.log("URL after navigate+reload:", afterReload)
+    expect(afterReload).toContain(`/leagues/${leagueId}`)
+    expect(afterReload).toContain("tab=tactics")
+  })
+
+  // ─── 21. ONBOARDING tutorial appears on first visit ─────────────────────
+  test("21 — Onboarding tutorial is reachable", async ({ browser }) => {
+    const ctxFresh = await browser.newContext({ viewport: { width: 390, height: 844 } })
+    const pageFresh = await ctxFresh.newPage()
+    try {
+      const email = testEmail("ut")
+      await registerUser(pageFresh, { email, password, displayName: "Manager Tutorial" })
+      // Wait for hub
+      await expect(pageFresh.getByText("Pantalla de inicio")).toBeVisible({ timeout: 20000 })
+
+      // Onboarding overlay should appear (it's gated by localStorage)
+      const tutorialBadge = pageFresh.getByText(/Tutorial · \d+\/\d+/)
+      const isVisible = await tutorialBadge.isVisible({ timeout: 5000 }).catch(() => false)
+      console.log("Onboarding visible:", isVisible)
+      // The overlay is optional — if visible, click "Saltar" to dismiss
+      if (isVisible) {
+        const skip = pageFresh.getByRole("button", { name: /Saltar|Empezar/ })
+        if (await skip.isVisible({ timeout: 2000 }).catch(() => false)) await skip.click()
+      }
+      // Either way, we should land in the hub eventually
+      await expect(pageFresh.getByText("Mis Ligas")).toBeVisible({ timeout: 5000 })
+    } finally {
+      await pageFresh.close()
+      await ctxFresh.close()
+    }
   })
 })

@@ -39,6 +39,24 @@ CREATE TABLE IF NOT EXISTS league_members (
 ALTER TABLE league_members ADD COLUMN IF NOT EXISTS club_id UUID;
 ALTER TABLE league_members ADD COLUMN IF NOT EXISTS is_bot BOOLEAN NOT NULL DEFAULT FALSE;
 
+-- L-3: defensive duplicate constraint to prevent race conditions on join.
+-- The CREATE TABLE above already declares UNIQUE(league_id, user_id) but we
+-- re-assert it via a named constraint so older databases get the index too.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'unique_user_league'
+  ) THEN
+    ALTER TABLE league_members
+      ADD CONSTRAINT unique_user_league UNIQUE (user_id, league_id);
+  END IF;
+END $$;
+
+-- A user must own at most one club per league.
+CREATE UNIQUE INDEX IF NOT EXISTS clubs_one_per_user_idx
+  ON clubs (league_id, manager_user_id)
+  WHERE manager_user_id IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS league_transfer_windows (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   league_id UUID NOT NULL REFERENCES leagues(id) ON DELETE CASCADE UNIQUE,

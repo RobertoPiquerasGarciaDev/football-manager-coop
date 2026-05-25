@@ -11,7 +11,7 @@ interface NavItem {
 const navItems: NavItem[] = [
   {
     id: "dashboard",
-    label: "Dashboard",
+    label: "Inicio",
     icon: (active) => (
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active ? "var(--amber)" : "currentColor"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <rect x="3" y="3" width="7" height="7" rx="1" fill={active ? "var(--amber)" : "none"} fillOpacity={active ? 0.2 : 0} />
@@ -23,7 +23,7 @@ const navItems: NavItem[] = [
   },
   {
     id: "squad",
-    label: "Squad",
+    label: "Plantilla",
     icon: (active) => (
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active ? "var(--amber)" : "currentColor"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2" />
@@ -35,7 +35,7 @@ const navItems: NavItem[] = [
   },
   {
     id: "tactics",
-    label: "Tactics",
+    label: "Tácticas",
     icon: (active) => (
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active ? "var(--amber)" : "currentColor"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <rect x="2" y="3" width="20" height="14" rx="2" fill={active ? "var(--amber)" : "none"} fillOpacity={active ? 0.2 : 0} />
@@ -48,7 +48,7 @@ const navItems: NavItem[] = [
   },
   {
     id: "market",
-    label: "Market",
+    label: "Mercado",
     icon: (active) => (
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active ? "var(--amber)" : "currentColor"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M2 12h4l3-9 6 18 3-9h4" fill={active ? "var(--amber)" : "none"} fillOpacity={active ? 0.1 : 0} />
@@ -58,7 +58,7 @@ const navItems: NavItem[] = [
   },
   {
     id: "league",
-    label: "League",
+    label: "Liga",
     icon: (active) => (
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active ? "var(--amber)" : "currentColor"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M6 9H4.5a2.5 2.5 0 010-5H6" />
@@ -71,7 +71,7 @@ const navItems: NavItem[] = [
   },
   {
     id: "academy",
-    label: "Academy",
+    label: "Cantera",
     icon: (active) => (
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active ? "var(--amber)" : "currentColor"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M12 3l7 4v5c0 4-3 7-7 9-4-2-7-5-7-9V7l7-4z" fill={active ? "var(--amber)" : "none"} fillOpacity={active ? 0.2 : 0} />
@@ -81,7 +81,7 @@ const navItems: NavItem[] = [
   },
   {
     id: "finance",
-    label: "Finance",
+    label: "Finanzas",
     icon: (active) => (
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active ? "var(--amber)" : "currentColor"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M3 21h18" />
@@ -93,7 +93,7 @@ const navItems: NavItem[] = [
   },
   {
     id: "staff",
-    label: "Staff",
+    label: "Cuerpo",
     icon: (active) => (
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active ? "var(--amber)" : "currentColor"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M12 3l8 4v6c0 4-3 7-8 8-5-1-8-4-8-8V7l8-4z" fill={active ? "var(--amber)" : "none"} fillOpacity={active ? 0.2 : 0} />
@@ -103,7 +103,7 @@ const navItems: NavItem[] = [
   },
   {
     id: "coop",
-    label: "Co-op",
+    label: "Chat",
     icon: (active) => (
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active ? "var(--amber)" : "currentColor"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="8" cy="8" r="3" fill={active ? "var(--amber)" : "none"} fillOpacity={active ? 0.2 : 0} />
@@ -114,7 +114,7 @@ const navItems: NavItem[] = [
   },
   {
     id: "settings",
-    label: "Settings",
+    label: "Ajustes",
     icon: (active) => (
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={active ? "var(--amber)" : "currentColor"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M12 15.5A3.5 3.5 0 1112 8a3.5 3.5 0 010 7.5z" fill={active ? "var(--amber)" : "none"} fillOpacity={active ? 0.2 : 0} />

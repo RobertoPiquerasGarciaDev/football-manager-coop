@@ -6,7 +6,7 @@ import type { MoraleBand, PositionGroup } from "@/lib/types"
 import { formatMoney } from "@/lib/format"
 import { useGame } from "@/lib/game-provider"
 
-const posFilters = ["All", "GK", "DEF", "MID", "FWD"] as const
+const posFilters = ["Todos", "GK", "DEF", "MID", "FWD"] as const
 
 function getRatingColor(r: number) {
   if (r >= 85) return "text-[var(--success-green)] bg-[var(--success-green)]/15 border-[var(--success-green)]/25"
@@ -37,11 +37,11 @@ function getPosColor(p: PositionGroup) {
 export function SquadSection() {
   const { getUserSquad } = useGame()
   const players = getUserSquad()
-  const [filter, setFilter] = useState<(typeof posFilters)[number]>("All")
+  const [filter, setFilter] = useState<(typeof posFilters)[number]>("Todos")
   const [search, setSearch] = useState("")
 
   const filtered = players.filter((p) => {
-    if (filter !== "All" && p.positionGroup !== filter) return false
+    if (filter !== "Todos" && p.positionGroup !== filter) return false
     if (search && !p.displayName.toLowerCase().includes(search.toLowerCase())) return false
     return true
   })
@@ -57,10 +57,10 @@ export function SquadSection() {
     <div className="flex flex-col gap-3 px-4 pt-4 pb-4">
       <div className="grid grid-cols-4 gap-2">
         {[
-          { label: "Players", value: squadStats.total, color: "var(--foreground)" },
-          { label: "Avg Rating", value: squadStats.avgRating, color: "var(--amber)" },
-          { label: "Avg Age", value: squadStats.avgAge, color: "var(--stats-blue)" },
-          { label: "Injured", value: squadStats.injured, color: "var(--alert-red)" },
+          { label: "Jugadores", value: squadStats.total, color: "var(--foreground)" },
+          { label: "Rating medio", value: squadStats.avgRating, color: "var(--amber)" },
+          { label: "Edad media", value: squadStats.avgAge, color: "var(--stats-blue)" },
+          { label: "Lesionados", value: squadStats.injured, color: "var(--alert-red)" },
         ].map((s) => (
           <div key={s.label} className="flex flex-col items-center gap-1 p-3 rounded-xl bg-card border border-border/50">
             <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">{s.label}</span>
@@ -74,7 +74,7 @@ export function SquadSection() {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <input
             type="text"
-            placeholder="Search players..."
+            placeholder="Buscar jugador..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-card border border-border/50 text-sm text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-2 focus:ring-[var(--amber)]/30 focus:border-[var(--amber)]/40"
@@ -97,7 +97,7 @@ export function SquadSection() {
           <div className="flex-1" />
           <button className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-card border border-border/50 text-muted-foreground hover:text-foreground text-[11px] font-semibold transition-colors">
             <ArrowUpDown className="w-3 h-3" />
-            Sort
+            Ordenar
           </button>
         </div>
       </div>
@@ -130,7 +130,7 @@ export function SquadSection() {
                 <div className="flex items-center gap-2 mb-1">
                   <span className="text-sm font-bold text-foreground truncate">{player.displayName}</span>
                   {player.isInjured && (
-                    <span className="shrink-0 px-1.5 py-0.5 rounded bg-[var(--alert-red)]/15 text-[var(--alert-red)] text-[9px] font-black">INJ</span>
+                    <span className="shrink-0 px-1.5 py-0.5 rounded bg-[var(--alert-red)]/15 text-[var(--alert-red)] text-[9px] font-black">LES</span>
                   )}
                 </div>
                 <div className="flex items-center gap-2">

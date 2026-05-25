@@ -1,6 +1,8 @@
 "use client"
 
+import type React from "react"
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { useRouter } from "next/navigation"
 import { CheckCircle2, Home, Settings, Upload, Users } from "lucide-react"
 import { AuthScreen } from "@/components/auth-screen"
 import { TopBar } from "@/components/top-bar"
@@ -33,6 +35,7 @@ import { useToast } from "@/hooks/use-toast"
 import { createLeague, createTransfer, fetchClubAvailabilityByInvite, fetchLeague, joinLeague, listLeagues, markLeagueReady, markNotificationRead, submitTurn, type ClubAvailability, type LeagueResponse } from "@/lib/api"
 import { useGame } from "@/lib/game-provider"
 import { useNotifications } from "@/lib/notifications"
+import { ClubGridSkeleton } from "@/components/ui/skeleton-loaders"
 import type { GameSave, Match, MatchEvent } from "@/lib/types"
 
 const AcademySection = dynamic(() => import("@/components/academy-section").then((mod) => mod.AcademySection))
@@ -40,8 +43,20 @@ const CooperativeSection = dynamic(() => import("@/components/cooperative-sectio
 const FinanceSection = dynamic(() => import("@/components/finance-section").then((mod) => mod.FinanceSection))
 const SettingsSection = dynamic(() => import("@/components/settings-section").then((mod) => mod.SettingsSection))
 const StaffSection = dynamic(() => import("@/components/staff-section").then((mod) => mod.StaffSection))
+const OnboardingOverlay = dynamic(() => import("@/components/onboarding-overlay").then((mod) => mod.OnboardingOverlay))
+const PostMatchScreen = dynamic(() => import("@/components/post-match-screen").then((mod) => mod.PostMatchScreen))
 
 export type TabId = "dashboard" | "squad" | "tactics" | "market" | "league" | "academy" | "finance" | "staff" | "coop" | "settings"
+
+const VALID_TABS: ReadonlyArray<TabId> = [
+  "dashboard", "squad", "tactics", "market", "league", "academy", "finance", "staff", "coop", "settings",
+]
+
+function normalizeTab(value: unknown): TabId {
+  return VALID_TABS.includes(value as TabId) ? (value as TabId) : "dashboard"
+}
+
+const ACTIVE_LEAGUE_KEY = "fm-coop-active-league"
 
 function SectionTitle({ title, subtitle }: { title: string; subtitle: string }) {
   return (
@@ -107,8 +122,15 @@ function getLeagueStatusLabel(league: LeagueResponse) {
   return "Esperando jugadores"
 }
 
-export default function Dashboard() {
-  const [activeTab, setActiveTab] = useState<TabId>("dashboard")
+export default function Dashboard({
+  initialLeagueId,
+  initialTab,
+}: {
+  initialLeagueId?: string
+  initialTab?: string
+} = {}) {
+  const router = useRouter()
+  const [activeTab, setActiveTab] = useState<TabId>(normalizeTab(initialTab))
   const [resultMatch, setResultMatch] = useState<Match | null>(null)
   const [resultSave, setResultSave] = useState<GameSave | null>(null)
   const [isResultOpen, setIsResultOpen] = useState(false)
@@ -123,7 +145,7 @@ export default function Dashboard() {
   const [leagueSyncMessage, setLeagueSyncMessage] = useState<string | null>(null)
   const [leagueSyncError, setLeagueSyncError] = useState<string | null>(null)
   const [remoteLeague, setRemoteLeague] = useState<LeagueResponse | null>(null)
-  const [selectedLeagueId, setSelectedLeagueId] = useState<string | null>(null)
+  const [selectedLeagueId, setSelectedLeagueId] = useState<string | null>(initialLeagueId ?? null)
   const [isLeagueActionPending, setIsLeagueActionPending] = useState(false)
   const [isTurnSubmitting, setIsTurnSubmitting] = useState(false)
   const [currentTacticsDraft, setCurrentTacticsDraft] = useState<{ lineup: unknown[]; tactics: Record<string, unknown> } | null>(null)
@@ -147,6 +169,41 @@ export default function Dashboard() {
   useEffect(() => {
     if (leagueSync.league) setRemoteLeague(leagueSync.league)
   }, [leagueSync.league])
+
+  // L-2/V-8: Sync active league + tab to URL and localStorage so reload preserves context
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    if (selectedLeagueId) {
+      window.localStorage.setItem(ACTIVE_LEAGUE_KEY, selectedLeagueId)
+      const url = `/leagues/${selectedLeagueId}${activeTab !== "dashboard" ? `?tab=${activeTab}` : ""}`
+      if (window.location.pathname + window.location.search !== url) {
+        router.replace(url)
+      }
+    } else {
+      window.localStorage.removeItem(ACTIVE_LEAGUE_KEY)
+      const url = activeTab !== "dashboard" ? `/?tab=${activeTab}` : "/"
+      if (window.location.pathname + window.location.search !== url) {
+        router.replace(url)
+      }
+    }
+  }, [selectedLeagueId, activeTab, router])
+
+  // On mount: hydrate league id from localStorage if we landed on / with no league
+  useEffect(() => {
+    if (selectedLeagueId || typeof window === "undefined") return
+    const stored = window.localStorage.getItem(ACTIVE_LEAGUE_KEY)
+    if (stored) setSelectedLeagueId(stored)
+  }, [selectedLeagueId])
+
+  // When we have a selectedLeagueId but no remoteLeague loaded yet, fetch it
+  useEffect(() => {
+    if (!token || !selectedLeagueId || remoteLeague?.id === selectedLeagueId) return
+    let cancelled = false
+    void fetchLeague(token, selectedLeagueId)
+      .then((league) => { if (!cancelled) setRemoteLeague(league) })
+      .catch((error) => { if (!cancelled) setLeagueSyncError(error instanceof Error ? error.message : "No se pudo cargar la liga") })
+    return () => { cancelled = true }
+  }, [token, selectedLeagueId, remoteLeague?.id])
 
   const refreshLeagues = useCallback(async () => {
     if (!token) return
@@ -291,6 +348,24 @@ export default function Dashboard() {
           ? `${response.readyCount}/${response.total} managers han cerrado su mercado`
           : `${response.readyCount}/${response.total} managers listos`,
       })
+
+      // V-10: Post-market warning — check if user's tactic lineup differs from the
+      // available XI after closing market. We do a heuristic: if the tactic_draft
+      // has a lineup with placeholder names ("Titular N") it means the manager
+      // didn't customise it, so warn them.
+      const myDraft = league.tacticDrafts?.find(
+        (d) => d.userId === user?.id && d.matchday === league.currentMatchday,
+      )
+      const lineup = Array.isArray(myDraft?.lineup) ? myDraft.lineup : []
+      const isPlaceholder = lineup.length === 0 || lineup.every((p) => typeof p === "string" && /^Titular \d+$/i.test(p))
+      if (isPlaceholder) {
+        setTimeout(() => {
+          toast({
+            title: "⚠️ Revisa tu táctica",
+            description: "Tu mejor XI disponible podría no coincidir con tu táctica actual. Pulsa el botón Tácticas en la barra inferior.",
+          })
+        }, 700)
+      }
     } catch (error) {
       setLeagueSyncError(error instanceof Error ? error.message : "No se pudo marcar listo")
     } finally {
@@ -349,7 +424,7 @@ export default function Dashboard() {
   }
 
   if (isLoading) {
-    return <div className="min-h-screen bg-background max-w-md mx-auto flex items-center justify-center text-sm text-muted-foreground">Cargando sesion...</div>
+    return <div className="min-h-screen bg-background max-w-md mx-auto flex items-center justify-center text-sm text-muted-foreground">Cargando sesión…</div>
   }
 
   if (!user || !token) {
@@ -408,6 +483,10 @@ export default function Dashboard() {
 
           <section className="mb-4 rounded-3xl border border-border/50 bg-card/90 p-4">
             <h2 className="mb-3 text-sm font-black text-foreground">Elige tu equipo</h2>
+            {/* V-9: show skeleton while joining (invite code typed, response pending) */}
+            {inviteCode.trim().length === 6 && clubAvailability.length === 0 ? (
+              <ClubGridSkeleton count={20} />
+            ) : (
             <div className="grid grid-cols-2 gap-2">
               {(clubAvailability.length > 0 ? clubAvailability.map((club) => ({ ...club, city: club.taken ? `Ocupado por ${club.managerName ?? "manager"}` : "Disponible" })) : selectableClubs).map((club, index) => {
                 const selected = selectedClub === club.id
@@ -438,6 +517,7 @@ export default function Dashboard() {
                 )
               })}
             </div>
+            )}
           </section>
 
           <section className="mb-4 rounded-3xl border border-border/50 bg-card/90 p-4">
@@ -603,31 +683,16 @@ export default function Dashboard() {
         marketStatus={isMarketOpen ? getLeagueStatusLabel(remoteLeague) : "Mercado cerrado · temporada activa"}
       />
       {showOnboarding && (
-        <div className="px-4 pt-3">
-          <div className="rounded-2xl border border-[var(--amber)]/30 bg-[var(--amber)]/10 p-4">
-            <h2 className="text-sm font-black text-foreground">Welcome to Football Manager Cooperative</h2>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Create a league, invite managers, submit turns, train your academy and simulate matchdays with finance and morale impact.
-            </p>
-            <Button
-              type="button"
-              size="sm"
-              className="mt-3"
-              onClick={() => {
-                window.localStorage.setItem("fm-coop-onboarded", "true")
-                setShowOnboarding(false)
-              }}
-            >
-              Start managing
-            </Button>
-          </div>
-        </div>
+        <OnboardingOverlay onClose={() => {
+          window.localStorage.setItem("fm-coop-onboarded", "true")
+          setShowOnboarding(false)
+        }} />
       )}
       <div className="px-4 pt-3">
         <div className="rounded-2xl border border-border/50 bg-card p-3">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div>
-              <p className="text-xs font-bold text-foreground">Manager online</p>
+              <p className="text-xs font-bold text-foreground">Manager conectado</p>
               <p className="text-[11px] text-muted-foreground">{user.email}</p>
             </div>
             <Button type="button" variant="ghost" size="sm" onClick={logout}>
@@ -665,7 +730,7 @@ export default function Dashboard() {
                   {hasSubmittedTurn
                     ? `✓ Listo - esperando ${Math.max(0, (remoteLeague.turnStatus?.total ?? 0) - (remoteLeague.turnStatus?.submitted ?? 0))} managers`
                     : isTurnSubmitting
-                      ? "Enviando turno..."
+                      ? "Enviando turno…"
                       : "Enviar Turno · Estoy listo para esta jornada"}
                 </Button>
               </div>
@@ -713,14 +778,14 @@ export default function Dashboard() {
 
         {activeTab === "squad" && (
           <>
-            <SectionTitle title="Squad Management" subtitle="Manage your players, fitness & contracts" />
+            <SectionTitle title="Plantilla" subtitle="Gestiona jugadores, forma y contratos" />
             <SquadSection />
           </>
         )}
 
         {activeTab === "tactics" && (
           <>
-            <SectionTitle title="Tactics Board" subtitle="Set formation, play style & instructions" />
+            <SectionTitle title="Tácticas" subtitle="Formación, estilo de juego e instrucciones" />
             <TacticsSection
               online={
                 userClubInLeague
@@ -741,13 +806,13 @@ export default function Dashboard() {
 
         {activeTab === "market" && (
           <>
-            <SectionTitle title="Transfer Market" subtitle="Scout, bid & negotiate player transfers" />
+            <SectionTitle title="Mercado de fichajes" subtitle="Explora, oferta y negocia traspasos" />
             <MarketSection
               isMarketOpen={isMarketOpen && !isReady}
               closedMessage={
                 isMarketOpen && isReady
                   ? "Ya cerraste tu mercado. El resto de managers puede seguir fichando hasta cerrar el suyo."
-                  : "Mercado cerrado. Las ofertas se reabriran en el mercado de invierno."
+                  : "Mercado cerrado. Las ofertas se reabrirán en el mercado de invierno."
               }
               onCreateTransfer={handleCreateTransfer}
             />
@@ -756,42 +821,42 @@ export default function Dashboard() {
 
         {activeTab === "league" && (
           <>
-            <SectionTitle title="League Overview" subtitle="Standings, results & statistics" />
+            <SectionTitle title="Liga" subtitle="Clasificación, resultados y estadísticas" />
             <LeagueSection />
           </>
         )}
 
         {activeTab === "academy" && (
           <>
-            <SectionTitle title="Academy & Training" subtitle="Develop prospects and set weekly training" />
+            <SectionTitle title="Cantera" subtitle="Desarrolla juveniles y planifica entrenamientos" />
             <AcademySection />
           </>
         )}
 
         {activeTab === "finance" && (
           <>
-            <SectionTitle title="Finance Office" subtitle="Track income, expenses and fair play risk" />
+            <SectionTitle title="Finanzas" subtitle="Ingresos, gastos y riesgo de Fair Play" />
             <FinanceSection />
           </>
         )}
 
         {activeTab === "staff" && (
           <>
-            <SectionTitle title="Staff Room" subtitle="Hire coaches, scouts, analysts and medical staff" />
+            <SectionTitle title="Cuerpo técnico" subtitle="Contrata entrenadores, ojeadores y médicos" />
             <StaffSection leagueId={remoteLeague.id} />
           </>
         )}
 
         {activeTab === "coop" && (
           <>
-            <SectionTitle title="Co-op Hub" subtitle="League chat, turn status and commissioner controls" />
+            <SectionTitle title="Centro cooperativo" subtitle="Chat de liga, turnos y controles del comisionado" />
             <CooperativeSection />
           </>
         )}
 
         {activeTab === "settings" && (
           <>
-            <SectionTitle title="Settings" subtitle="Club assets, themes, sounds and license packs" />
+            <SectionTitle title="Ajustes" subtitle="Club, temas, sonidos y licencias" />
             <SettingsSection />
           </>
         )}
@@ -859,79 +924,18 @@ export default function Dashboard() {
           </DialogHeader>
 
           {resultMatch && resultSave ? (
-            <div className="flex flex-col gap-3">
-              <Card className="py-4">
-                <CardContent className="px-4">
-                  <div className="mb-4 h-2 overflow-hidden rounded-full bg-secondary">
-                    <div className="h-full w-full animate-pulse bg-[var(--amber)]" />
-                  </div>
-                  <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
-                    <div className="text-right">
-                      <p className="text-sm font-bold text-foreground">{getClubName(resultSave, resultMatch.homeClubId)}</p>
-                      <Badge variant="secondary">Home</Badge>
-                    </div>
-                    <div className="px-4 py-2 rounded-xl bg-secondary text-2xl font-black text-foreground">
-                      {resultMatch.homeScore} - {resultMatch.awayScore}
-                    </div>
-                    <div>
-                      <p className="text-sm font-bold text-foreground">{getClubName(resultSave, resultMatch.awayClubId)}</p>
-                      <Badge variant="outline">Away</Badge>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-
-              <div className="rounded-xl border border-border/50 p-3">
-                <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-muted-foreground">Goles</h3>
-                {goals.length > 0 ? (
-                  <div className="flex flex-col gap-2">
-                    {goals.map((event) => (
-                      <div key={event.id} className="flex items-center justify-between gap-3 text-sm">
-                        <span className="font-semibold text-foreground">
-                          {event.minute}' · {getPlayerName(resultSave, event)}
-                        </span>
-                        <span className="text-xs text-muted-foreground">{getClubName(resultSave, event.clubId)}</span>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-sm text-muted-foreground">Sin goles.</p>
-                )}
-              </div>
-
-              <div className="rounded-xl border border-border/50 p-3">
-                <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-muted-foreground">Timeline</h3>
-                <div className="flex flex-col gap-2">
-                  {resultMatch.events.slice(0, 8).map((event) => (
-                    <div key={event.id} className="flex items-center gap-2 text-xs">
-                      <span className="w-9 rounded bg-secondary px-1.5 py-0.5 text-center font-bold text-foreground">{event.minute}'</span>
-                      <span className="text-muted-foreground">{event.description ?? event.type.replace("_", " ")}</span>
-                    </div>
-                  ))}
-                  {resultMatch.events.length === 0 && <p className="text-sm text-muted-foreground">Quiet match with no major events.</p>}
-                </div>
-              </div>
-
-              <div className="rounded-xl border border-border/50 p-3">
-                <h3 className="mb-2 text-xs font-bold uppercase tracking-wider text-muted-foreground">Tarjetas</h3>
-                {cards.length > 0 ? (
-                  <div className="flex flex-col gap-2">
-                    {cards.map((event) => (
-                      <div key={event.id} className="flex items-center justify-between gap-3 text-sm">
-                        <span className="font-semibold text-foreground">
-                          {event.minute}' · {getPlayerName(resultSave, event)}
-                        </span>
-                        <Badge variant={event.type === "red_card" ? "destructive" : "secondary"}>
-                          {event.type === "red_card" ? "Roja" : "Amarilla"}
-                        </Badge>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-sm text-muted-foreground">Sin tarjetas.</p>
-                )}
-              </div>
-            </div>
+            <PostMatchScreen
+              match={resultMatch}
+              save={resultSave}
+              onShowStandings={() => {
+                setIsResultOpen(false)
+                setActiveTab("league")
+              }}
+              onShowNext={() => {
+                setIsResultOpen(false)
+                setActiveTab("dashboard")
+              }}
+            />
           ) : (
             <p className="text-sm text-muted-foreground">No se simuló ningún partido nuevo.</p>
           )}
